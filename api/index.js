@@ -1,7 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
 const { MongoClient, ObjectId } = require('mongodb');
 const sharp = require('sharp');
-const Jimp = require('jimp');
 
 // --- Environment Variables ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -72,7 +71,50 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Image Processing: Fast Sharp Blur Frame + Zero-Fontconfig Jimp Watermark ---
+// --- Pure Vector SVG Path Generator for "Hot Lanka" (Zero Font / Zero Fontconfig) ---
+function createHotLankaWatermarkSvg(width, height) {
+  const paths = [
+    // H
+    'M 20 20 L 20 100 M 20 60 L 65 60 M 65 20 L 65 100',
+    // o
+    'M 115 45 A 25 27.5 0 1 0 115 100 A 25 27.5 0 1 0 115 45',
+    // t
+    'M 175 25 L 175 90 Q 175 100 188 100 L 198 100 M 160 48 L 195 48',
+    // L
+    'M 265 20 L 265 100 L 315 100',
+    // a
+    'M 378 65 A 22 22 0 1 0 378 82 M 378 46 L 378 100',
+    // n
+    'M 412 46 L 412 100 M 412 62 Q 412 46 432 46 Q 452 46 452 65 L 452 100',
+    // k
+    'M 486 20 L 486 100 M 528 46 L 486 76 M 502 65 L 532 100',
+    // a
+    'M 600 65 A 22 22 0 1 0 600 82 M 600 46 L 600 100'
+  ];
+
+  const targetW = Math.round(width * 0.72);
+  const scale = targetW / 640;
+  const targetH = Math.round(120 * scale);
+  const offsetX = Math.round((width - targetW) / 2);
+  const offsetY = Math.round((height - targetH) / 2);
+
+  const pathElements = paths
+    .map(
+      (d) =>
+        `<path d="${d}" fill="none" stroke="rgba(255,255,255,0.32)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>`
+    )
+    .join('');
+
+  return Buffer.from(`
+    <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
+      <g transform="translate(${offsetX}, ${offsetY}) scale(${scale})">
+        ${pathElements}
+      </g>
+    </svg>
+  `);
+}
+
+// --- Image Processing: Fast Sharp Blur Frame + Pure Vector Watermark ---
 async function processImageWithEffects(fileId, cfg) {
   const fileLink = await bot.telegram.getFileLink(fileId);
   const response = await fetch(fileLink.href);
@@ -95,30 +137,12 @@ async function processImageWithEffects(fileId, cfg) {
 
   let foregroundBuffer = normalizedBuffer;
 
-  // 1. Apply Subtle Centered Watermark using Jimp (Zero Fontconfig dependency)
+  // 1. Apply Subtle Centered Vector Watermark (Zero external font dependencies)
   if (cfg.watermark_enabled) {
-    const jimpImg = await Jimp.read(normalizedBuffer);
-    const font = origW >= 800 ? await Jimp.loadFont(Jimp.FONT_SANS_128_WHITE) : await Jimp.loadFont(Jimp.FONT_SANS_64_WHITE);
-    const wmText = cfg.watermark_text || 'Hot Lanka';
-
-    const textLayer = new Jimp(origW, origH, 0x00000000);
-    textLayer.print(
-      font,
-      0,
-      0,
-      {
-        text: wmText,
-        alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER,
-        alignmentY: Jimp.VERTICAL_ALIGN_MIDDLE
-      },
-      origW,
-      origH
-    );
-
-    // Subtle 28% opacity
-    textLayer.opacity(0.28);
-    jimpImg.composite(textLayer, 0, 0);
-    foregroundBuffer = await jimpImg.getBufferAsync(Jimp.MIME_JPEG);
+    const watermarkSvg = createHotLankaWatermarkSvg(origW, origH);
+    foregroundBuffer = await sharp(normalizedBuffer)
+      .composite([{ input: watermarkSvg, left: 0, top: 0 }])
+      .toBuffer();
   }
 
   if (!cfg.blur_frame) {
@@ -138,7 +162,6 @@ async function processImageWithEffects(fileId, cfg) {
     .modulate({ brightness: 0.65 })
     .toBuffer();
 
-  // Pure shape SVG (no text = zero Fontconfig usage)
   const roundedMask = Buffer.from(
     `<svg width="${origW}" height="${origH}"><rect x="0" y="0" width="${origW}" height="${origH}" rx="${cornerRadius}" ry="${cornerRadius}" fill="#ffffff"/></svg>`
   );
@@ -198,8 +221,12 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
       return { status: 'posted' };
     } catch (err) {
       console.error('Publish Error:', err.message);
-      // Only delete from queue if Telegram file is permanently invalid/expired
-      if (err.message && (err.message.includes('FILE_UNAVAILABLE') || err.message.includes('wrong file_id') || err.message.includes('file is temporarily unavailable'))) {
+      if (
+        err.message &&
+        (err.message.includes('FILE_UNAVAILABLE') ||
+          err.message.includes('wrong file_id') ||
+          err.message.includes('file is temporarily unavailable'))
+      ) {
         await db.collection('queue').deleteOne({ _id: nextItem._id });
         if (notifyAdmin) {
           await bot.telegram.sendMessage(
