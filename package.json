@@ -1,11 +1,11 @@
 {
   "name": "vip-promo-queue-bot",
   "version": "1.0.0",
-  "description": "Telegram VIP Promo Queue Bot with Glassmorphism Frame & Vector Watermark",
+  "description": "Telegram VIP Promo Queue Bot",
   "main": "api/index.js",
   "dependencies": {
+    "jimp": "^0.22.12",
     "mongodb": "^6.5.0",
-    "sharp": "^0.33.3",
     "telegraf": "^4.16.3"
   },
   "engines": {
