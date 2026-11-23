@@ -79,6 +79,7 @@ async function getConfig(db) {
       today_date: null,
       today_posted_count: 0,
       is_posting_locked: false,
+      lock_timestamp: 0,
       admin_state: null,
       panel_msg_id: null
     };
@@ -184,10 +185,16 @@ async function publishNextQueueItem(db, cfg) {
   }
 }
 
-// --- Time-Budgeted Batch Execution (7.5s Cutoff + Exact Daily Cap + Silent Panel Update) ---
+// --- Time-Budgeted Batch Execution (Auto-Unlock + 5s Safe Cutoff + Exact Daily Cap) ---
 async function runScheduledBatch(db, startTime) {
   const cfg = await getConfig(db);
-  if (!cfg.is_active || cfg.is_posting_locked) return;
+  if (!cfg.is_active) return;
+
+  // Auto-release stale lock if older than 90 seconds (prevents permanent lock on Vercel timeout)
+  const lockAge = Date.now() - (cfg.lock_timestamp || 0);
+  if (cfg.is_posting_locked && lockAge < 90000) {
+    return;
+  }
 
   const { dateStr } = getSLDateTime();
   const dailyLimit = Number(cfg.daily_limit) || 0;
@@ -196,10 +203,10 @@ async function runScheduledBatch(db, startTime) {
 
   let toPostCount = Math.min(cfg.pending_batch_count || 0, remainingToday);
   if (toPostCount <= 0) {
-    if ((cfg.pending_batch_count || 0) > 0) {
+    if ((cfg.pending_batch_count || 0) > 0 || cfg.is_posting_locked) {
       await db.collection('settings').updateOne(
         { _id: 'main_config' },
-        { $set: { pending_batch_count: 0 } }
+        { $set: { pending_batch_count: 0, is_posting_locked: false, lock_timestamp: 0 } }
       );
     }
     return;
@@ -207,14 +214,14 @@ async function runScheduledBatch(db, startTime) {
 
   await db.collection('settings').updateOne(
     { _id: 'main_config' },
-    { $set: { is_posting_locked: true } }
+    { $set: { is_posting_locked: true, lock_timestamp: Date.now() } }
   );
 
   let postedAny = false;
 
   try {
     while (toPostCount > 0 && remainingToday > 0) {
-      if (Date.now() - startTime > 7500) {
+      if (Date.now() - startTime > 5000) {
         break;
       }
 
@@ -237,7 +244,8 @@ async function runScheduledBatch(db, startTime) {
             $set: {
               pending_batch_count: toPostCount,
               today_date: dateStr,
-              today_posted_count: todayPosted
+              today_posted_count: todayPosted,
+              lock_timestamp: Date.now()
             }
           }
         );
@@ -246,7 +254,7 @@ async function runScheduledBatch(db, startTime) {
   } finally {
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
-      { $set: { pending_batch_count: toPostCount, is_posting_locked: false } }
+      { $set: { pending_batch_count: toPostCount, is_posting_locked: false, lock_timestamp: 0 } }
     );
 
     // Silently update existing Control Panel queue count without sending new messages
