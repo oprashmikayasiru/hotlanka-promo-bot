@@ -136,8 +136,8 @@ async function buildTransformedMedia(fileId, cfg) {
   );
 }
 
-// --- Publish Single Next Valid Item from Queue ---
-async function publishNextQueueItem(db, cfg, notifyAdmin = false) {
+// --- Publish Single Next Valid Item from Queue (Silent — No Chat Spam) ---
+async function publishNextQueueItem(db, cfg) {
   if (!TARGET_CHANNEL_ID) {
     return { status: 'error', reason: 'Missing TARGET_CHANNEL_ID' };
   }
@@ -169,10 +169,6 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = false) {
       await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, mediaSource, postOptions);
       await db.collection('queue').deleteOne({ _id: nextItem._id });
 
-      if (notifyAdmin) {
-        await bot.telegram.sendMessage(ADMIN_ID, '🚀 Scheduled post published to Hot Lanka!').catch(() => {});
-      }
-
       return { status: 'posted' };
     } catch (err) {
       if (
@@ -182,16 +178,13 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = false) {
       ) {
         await db.collection('queue').deleteOne({ _id: nextItem._id });
       } else {
-        if (notifyAdmin) {
-          await bot.telegram.sendMessage(ADMIN_ID, `❌ Error posting: ${err.message}`).catch(() => {});
-        }
         return { status: 'error', reason: err.message };
       }
     }
   }
 }
 
-// --- Time-Budgeted Batch Execution (7.5s Cutoff + Exact Daily Cap) ---
+// --- Time-Budgeted Batch Execution (7.5s Cutoff + Exact Daily Cap + Silent Panel Update) ---
 async function runScheduledBatch(db, startTime) {
   const cfg = await getConfig(db);
   if (!cfg.is_active || cfg.is_posting_locked) return;
@@ -217,13 +210,15 @@ async function runScheduledBatch(db, startTime) {
     { $set: { is_posting_locked: true } }
   );
 
+  let postedAny = false;
+
   try {
     while (toPostCount > 0 && remainingToday > 0) {
       if (Date.now() - startTime > 7500) {
         break;
       }
 
-      const res = await publishNextQueueItem(db, cfg, true);
+      const res = await publishNextQueueItem(db, cfg);
       if (res.status === 'empty') {
         toPostCount = 0;
         break;
@@ -232,6 +227,7 @@ async function runScheduledBatch(db, startTime) {
         break;
       }
       if (res.status === 'posted') {
+        postedAny = true;
         toPostCount--;
         todayPosted++;
         remainingToday--;
@@ -252,6 +248,18 @@ async function runScheduledBatch(db, startTime) {
       { _id: 'main_config' },
       { $set: { pending_batch_count: toPostCount, is_posting_locked: false } }
     );
+
+    // Silently update existing Control Panel queue count without sending new messages
+    if (postedAny && cfg.panel_msg_id && !cfg.admin_state) {
+      const updatedCfg = await getConfig(db);
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        cfg.panel_msg_id,
+        undefined,
+        await renderAdminText(db, updatedCfg),
+        { parse_mode: 'HTML', ...getAdminKeyboard(updatedCfg) }
+      ).catch(() => {});
+    }
   }
 }
 
@@ -482,7 +490,7 @@ bot.action('admin_post_now', async (ctx) => {
 
   const db = await getDb();
   const cfg = await getConfig(db);
-  const res = await publishNextQueueItem(db, cfg, false);
+  const res = await publishNextQueueItem(db, cfg);
 
   if (res.status === 'posted') {
     await ctx.answerCbQuery('🚀 Posted to Hot Lanka channel!', { show_alert: true }).catch(() => {});
@@ -889,7 +897,6 @@ module.exports = async (req, res) => {
               curTotalMins <= schedTotalMins + 20 &&
               cfg.last_posted_slot !== slotKey
             ) {
-              // Distribute remaining daily posts evenly across remaining schedule slots
               const remainingSlots = times.length - i;
               const postsForThisSlot = Math.min(
                 remainingToday,
