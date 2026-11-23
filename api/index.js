@@ -1,6 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
 const { MongoClient, ObjectId } = require('mongodb');
-const sharp = require('sharp');
+const Jimp = require('jimp');
 
 // --- Environment Variables ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -71,7 +71,7 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Lightweight Bitmap Font Renderer for "HOT LANKA" (< 5ms, Zero Loops Lag) ---
+// --- Zero-External-Font Bitmap Renderer for "HOT LANKA" ---
 const BITMAP_CHARS = {
   H: ['1001', '1001', '1111', '1001', '1001'],
   O: ['1111', '1001', '1001', '1001', '1111'],
@@ -83,7 +83,7 @@ const BITMAP_CHARS = {
   ' ': ['00', '00', '00', '00', '00']
 };
 
-function createFastWatermarkBuffer(targetWidth) {
+function createJimpWatermark(targetWidth) {
   const text = 'HOT LANKA';
   const grid = ['', '', '', '', ''];
   for (const ch of text) {
@@ -95,30 +95,23 @@ function createFastWatermarkBuffer(targetWidth) {
 
   const cols = grid[0].length;
   const rows = 5;
-  const smallRaw = Buffer.alloc(cols * rows * 4, 0);
+  const tiny = new Jimp(cols, rows, 0x00000000);
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       if (grid[r][c] === '1') {
-        const idx = (r * cols + c) * 4;
-        smallRaw[idx] = 255;
-        smallRaw[idx + 1] = 255;
-        smallRaw[idx + 2] = 255;
-        smallRaw[idx + 3] = 85; // ~33% subtle white opacity
+        tiny.setPixelColor(0xffffff58, c, r); // Subtle white (~35% alpha)
       }
     }
   }
 
   const outW = Math.max(120, Math.round(targetWidth * 0.65));
   const outH = Math.max(20, Math.round((outW / cols) * rows));
-
-  return sharp(smallRaw, { raw: { width: cols, height: rows, channels: 4 } })
-    .resize(outW, outH, { kernel: 'nearest' })
-    .png()
-    .toBuffer();
+  tiny.resize(outW, outH, Jimp.RESIZE_NEAREST_NEIGHBOR);
+  return tiny;
 }
 
-// --- Ultra-Fast C++ Native Image Processing (< 0.3 seconds total) ---
+// --- Pure JavaScript Image Processing (100% Vercel Compatible, Zero Native Crashes) ---
 async function processImageWithEffects(fileId, cfg) {
   const fileLink = await bot.telegram.getFileLink(fileId);
   const response = await fetch(fileLink.href);
@@ -129,59 +122,48 @@ async function processImageWithEffects(fileId, cfg) {
     return inputBuffer;
   }
 
-  // Resize once to max 800px width for instant speed
-  let foregroundBuffer = await sharp(inputBuffer)
-    .resize({ width: 800, withoutEnlargement: true })
-    .jpeg({ quality: 88 })
-    .toBuffer();
+  const fgImg = await Jimp.read(inputBuffer);
+  if (fgImg.bitmap.width > 760) {
+    fgImg.resize(760, Jimp.AUTO);
+  }
 
-  const meta = await sharp(foregroundBuffer).metadata();
-  const origW = meta.width || 640;
-  const origH = meta.height || 1136;
+  const origW = fgImg.bitmap.width;
+  const origH = fgImg.bitmap.height;
 
   // 1. Apply Subtle Centered Watermark
   if (cfg.watermark_enabled) {
-    const wmPng = await createFastWatermarkBuffer(origW);
-    foregroundBuffer = await sharp(foregroundBuffer)
-      .composite([{ input: wmPng, gravity: 'center' }])
-      .jpeg({ quality: 88 })
-      .toBuffer();
+    const wmImg = createJimpWatermark(origW);
+    const wmX = Math.round((origW - wmImg.bitmap.width) / 2);
+    const wmY = Math.round((origH - wmImg.bitmap.height) / 2);
+    fgImg.composite(wmImg, wmX, wmY);
   }
 
   if (!cfg.blur_frame) {
-    return foregroundBuffer;
+    fgImg.quality(86);
+    return await fgImg.getBufferAsync(Jimp.MIME_JPEG);
   }
 
-  // 2. Native C++ Glassmorphism Blurred Frame (Zero JS pixel loops)
+  // 2. Apply Fast Glassmorphism Blurred Frame
   const padX = Math.round(origW * 0.1);
   const padY = Math.round(origH * 0.07);
   const canvasW = origW + padX * 2;
   const canvasH = origH + padY * 2;
 
-  // Tiny downscale + fast blur + upscale = instant silky glass background
-  const blurredBg = await sharp(inputBuffer)
-    .resize(160, Math.max(160, Math.round((160 * canvasH) / canvasW)), { fit: 'cover' })
+  // Fast downscale -> blur -> upscale for smooth background
+  const bgImg = fgImg
+    .clone()
+    .resize(120, Math.max(120, Math.round((120 * canvasH) / canvasW)))
     .blur(8)
-    .modulate({ brightness: 0.62 })
-    .resize(canvasW, canvasH, { fit: 'fill' })
-    .toBuffer();
+    .brightness(-0.32)
+    .resize(canvasW, canvasH);
 
-  // Crisp subtle glass border using sharp native extend
-  const borderedForeground = await sharp(foregroundBuffer)
-    .extend({
-      top: 3,
-      bottom: 3,
-      left: 3,
-      right: 3,
-      background: { r: 255, g: 255, b: 255, alpha: 0.35 }
-    })
-    .png()
-    .toBuffer();
+  // Subtle white glass border around foreground screenshot
+  const borderBox = new Jimp(origW + 6, origH + 6, 0xffffff55);
+  bgImg.composite(borderBox, padX - 3, padY - 3);
+  bgImg.composite(fgImg, padX, padY);
 
-  return await sharp(blurredBg)
-    .composite([{ input: borderedForeground, gravity: 'center' }])
-    .jpeg({ quality: 86 })
-    .toBuffer();
+  bgImg.quality(85);
+  return await bgImg.getBufferAsync(Jimp.MIME_JPEG);
 }
 
 // --- Publish Single Next Valid Item from Queue ---
