@@ -64,7 +64,8 @@ async function getConfig(db) {
       pending_batch_count: 0,
       last_posted_slot: null,
       is_posting_locked: false,
-      admin_state: null
+      admin_state: null,
+      panel_msg_id: null
     };
     await db.collection('settings').insertOne(cfg);
   }
@@ -121,11 +122,8 @@ async function buildTransformedMedia(fileId, cfg) {
 }
 
 // --- Publish Single Next Valid Item from Queue ---
-async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
+async function publishNextQueueItem(db, cfg, notifyAdmin = false) {
   if (!TARGET_CHANNEL_ID) {
-    if (notifyAdmin) {
-      await bot.telegram.sendMessage(ADMIN_ID, '❌ TARGET_CHANNEL_ID is missing in Vercel!').catch(() => {});
-    }
     return { status: 'error', reason: 'Missing TARGET_CHANNEL_ID' };
   }
 
@@ -157,7 +155,7 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
       await db.collection('queue').deleteOne({ _id: nextItem._id });
 
       if (notifyAdmin) {
-        await bot.telegram.sendMessage(ADMIN_ID, '🚀 Posted to Hot Lanka channel!').catch(() => {});
+        await bot.telegram.sendMessage(ADMIN_ID, '🚀 Scheduled post published to Hot Lanka!').catch(() => {});
       }
 
       return { status: 'posted' };
@@ -168,18 +166,9 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
           err.message.includes('file is temporarily unavailable'))
       ) {
         await db.collection('queue').deleteOne({ _id: nextItem._id });
-        if (notifyAdmin) {
-          await bot.telegram.sendMessage(
-            ADMIN_ID,
-            '⚠️ Skipped 1 deleted/invalid photo. Moving to the next one.'
-          ).catch(() => {});
-        }
       } else {
         if (notifyAdmin) {
-          await bot.telegram.sendMessage(
-            ADMIN_ID,
-            `❌ Error posting: ${err.message}`
-          ).catch(() => {});
+          await bot.telegram.sendMessage(ADMIN_ID, `❌ Error posting: ${err.message}`).catch(() => {});
         }
         return { status: 'error', reason: err.message };
       }
@@ -304,28 +293,56 @@ function getEffectsKeyboard(cfg) {
 bot.command('start', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
   await setupAdminCommands();
-  await ctx.replyWithHTML('🤖 <b>Bot is Active & Ready!</b>\nUse /admin to open the control panel.');
+  await ctx.deleteMessage().catch(() => {});
+  const db = await getDb();
+  const cfg = await getConfig(db);
+  const sent = await ctx.replyWithHTML(await renderAdminText(db, cfg), getAdminKeyboard(cfg));
+  await db.collection('settings').updateOne(
+    { _id: 'main_config' },
+    { $set: { panel_msg_id: sent.message_id, admin_state: null } }
+  );
 });
 
 bot.command('admin', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
   await setupAdminCommands();
+  await ctx.deleteMessage().catch(() => {});
   const db = await getDb();
   const cfg = await getConfig(db);
-  await ctx.replyWithHTML(await renderAdminText(db, cfg), getAdminKeyboard(cfg));
+
+  if (cfg.panel_msg_id) {
+    await bot.telegram.deleteMessage(ADMIN_ID, cfg.panel_msg_id).catch(() => {});
+  }
+
+  const sent = await ctx.replyWithHTML(await renderAdminText(db, cfg), getAdminKeyboard(cfg));
+  await db.collection('settings').updateOne(
+    { _id: 'main_config' },
+    { $set: { panel_msg_id: sent.message_id, admin_state: null } }
+  );
 });
 
 bot.command('cancel', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
+  await ctx.deleteMessage().catch(() => {});
   const db = await getDb();
+  const cfg = await getConfig(db);
   await db.collection('settings').updateOne(
     { _id: 'main_config' },
     { $set: { admin_state: null } }
   );
-  await ctx.reply('❌ Action cancelled.');
+
+  if (cfg.panel_msg_id) {
+    await bot.telegram.editMessageText(
+      ADMIN_ID,
+      cfg.panel_msg_id,
+      undefined,
+      await renderAdminText(db, cfg),
+      { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
+    ).catch(() => {});
+  }
 });
 
-// --- Photo Ingestion ---
+// --- Photo Ingestion (Notifications Stay in Chat) ---
 const albumCounters = new Map();
 
 bot.on('photo', async (ctx) => {
@@ -349,7 +366,18 @@ bot.on('photo', async (ctx) => {
   });
 
   if (!mediaGroupId) {
-    return ctx.reply('✅ Added to queue.');
+    await ctx.reply('✅ Added to queue.');
+    const cfg = await getConfig(db);
+    if (cfg.panel_msg_id && !cfg.admin_state) {
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        cfg.panel_msg_id,
+        undefined,
+        await renderAdminText(db, cfg),
+        { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
+      ).catch(() => {});
+    }
+    return;
   }
 
   const current = albumCounters.get(mediaGroupId) || { count: 0, timer: null };
@@ -360,6 +388,16 @@ bot.on('photo', async (ctx) => {
     const total = albumCounters.get(mediaGroupId)?.count || 1;
     albumCounters.delete(mediaGroupId);
     await ctx.reply(`✅ ${total} photos added to queue.`).catch(() => {});
+    const cfg = await getConfig(db);
+    if (cfg.panel_msg_id && !cfg.admin_state) {
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        cfg.panel_msg_id,
+        undefined,
+        await renderAdminText(db, cfg),
+        { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
+      ).catch(() => {});
+    }
   }, 1200);
 
   albumCounters.set(mediaGroupId, current);
@@ -371,12 +409,17 @@ bot.action('noop', (ctx) => ctx.answerCbQuery().catch(() => {}));
 bot.action('admin_refresh', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
+  const msgId = ctx.callbackQuery.message?.message_id;
+  await db.collection('settings').updateOne(
+    { _id: 'main_config' },
+    { $set: { admin_state: null, panel_msg_id: msgId } }
+  );
   const cfg = await getConfig(db);
   await ctx.editMessageText(await renderAdminText(db, cfg), {
     parse_mode: 'HTML',
     ...getAdminKeyboard(cfg)
   }).catch(() => {});
-  await ctx.answerCbQuery('Refreshed').catch(() => {});
+  await ctx.answerCbQuery('🔄 Refreshed').catch(() => {});
 });
 
 bot.action('admin_toggle_status', async (ctx) => {
@@ -394,21 +437,23 @@ bot.action('admin_toggle_status', async (ctx) => {
     parse_mode: 'HTML',
     ...getAdminKeyboard(cfg)
   }).catch(() => {});
-  await ctx.answerCbQuery(cfg.is_active ? 'Bot Activated' : 'Bot Paused').catch(() => {});
+  await ctx.answerCbQuery(cfg.is_active ? '🟢 Bot Activated' : '🔴 Bot Paused').catch(() => {});
 });
 
+// --- Instant Post Now (Popup Alert Only + Auto-Update Panel) ---
 bot.action('admin_post_now', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
-  await ctx.answerCbQuery('🚀 Publishing...').catch(() => {});
 
   const db = await getDb();
   const cfg = await getConfig(db);
-  const res = await publishNextQueueItem(db, cfg, true);
+  const res = await publishNextQueueItem(db, cfg, false);
 
-  if (res.status === 'empty') {
-    await ctx.reply('📭 <b>Queue is empty!</b> Send some screenshots first.', {
-      parse_mode: 'HTML'
-    }).catch(() => {});
+  if (res.status === 'posted') {
+    await ctx.answerCbQuery('🚀 Posted to Hot Lanka channel!', { show_alert: true }).catch(() => {});
+  } else if (res.status === 'empty') {
+    await ctx.answerCbQuery('📭 Queue is empty! Send some photos first.', { show_alert: true }).catch(() => {});
+  } else {
+    await ctx.answerCbQuery(`❌ Failed: ${res.reason || 'Unknown error'}`, { show_alert: true }).catch(() => {});
   }
 
   await ctx.editMessageText(await renderAdminText(db, cfg), {
@@ -417,7 +462,7 @@ bot.action('admin_post_now', async (ctx) => {
   }).catch(() => {});
 });
 
-// Daily Limit Menu
+// Daily Limit Menu (In-Place Edit)
 bot.action('admin_ui_limit', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const kb = Markup.inlineKeyboard([
@@ -454,14 +499,14 @@ bot.action(/set_limit_(\d+)/, async (ctx) => {
     { $set: { daily_limit: limit } }
   );
   const cfg = await getConfig(db);
-  await ctx.answerCbQuery(`Daily Limit set to ${limit}`).catch(() => {});
+  await ctx.answerCbQuery(`✅ Daily Limit set to ${limit}`).catch(() => {});
   await ctx.editMessageText(await renderAdminText(db, cfg), {
     parse_mode: 'HTML',
     ...getAdminKeyboard(cfg)
   }).catch(() => {});
 });
 
-// Schedule Times Menu
+// Schedule Times Menu (In-Place Edit)
 bot.action('admin_ui_times', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
@@ -479,14 +524,18 @@ bot.action('admin_ui_times', async (ctx) => {
 bot.action('admin_ui_add_time', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
+  const msgId = ctx.callbackQuery.message?.message_id;
   await db.collection('settings').updateOne(
     { _id: 'main_config' },
-    { $set: { admin_state: 'waiting_for_time' } }
+    { $set: { admin_state: 'waiting_for_time', panel_msg_id: msgId } }
   );
-  await ctx.reply(
-    '✍️ <b>Send posting time in 24h format:</b>\nExample: <code>09:30</code> or <code>20:00</code>\n\n<i>Send /cancel to abort.</i>',
-    { parse_mode: 'HTML' }
-  );
+  await ctx.editMessageText(
+    '✍️ <b>ADD POSTING TIME</b>\n\nSend time in 24h format (e.g., <code>09:30</code> or <code>20:00</code>):',
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'admin_ui_times')]])
+    }
+  ).catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
 });
 
@@ -506,25 +555,29 @@ bot.action(/del_time_(.+)/, async (ctx) => {
       ...getTimesKeyboard(cfg.schedule_times)
     }
   ).catch(() => {});
-  await ctx.answerCbQuery(`Removed ${timeToRemove}`).catch(() => {});
+  await ctx.answerCbQuery(`🗑 Removed ${timeToRemove}`).catch(() => {});
 });
 
-// Set Caption
+// Set Caption (In-Place Edit)
 bot.action('admin_ui_caption', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
+  const msgId = ctx.callbackQuery.message?.message_id;
   await db.collection('settings').updateOne(
     { _id: 'main_config' },
-    { $set: { admin_state: 'waiting_for_caption' } }
+    { $set: { admin_state: 'waiting_for_caption', panel_msg_id: msgId } }
   );
-  await ctx.reply(
-    '📝 <b>Send your formatted caption now:</b>\n\nFormat your text directly in Telegram (Bold, Italic, Quote, Emojis) and send it.\n\n<i>Send /cancel to abort.</i>',
-    { parse_mode: 'HTML' }
-  );
+  await ctx.editMessageText(
+    '📝 <b>SET POST CAPTION</b>\n\nType and send your formatted caption now (Bold, Italic, Quote, Emojis):',
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'admin_refresh')]])
+    }
+  ).catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// Image Effects Menu
+// Image Effects Menu (In-Place Edit)
 bot.action('admin_ui_effects', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
@@ -549,7 +602,7 @@ bot.action('toggle_blur_frame', async (ctx) => {
     { $set: { blur_frame: cfg.blur_frame } }
   );
   await ctx.editMessageReplyMarkup(getEffectsKeyboard(cfg).reply_markup).catch(() => {});
-  await ctx.answerCbQuery(`Blur Frame: ${cfg.blur_frame ? 'ON' : 'OFF'}`).catch(() => {});
+  await ctx.answerCbQuery(`Blur Frame: ${cfg.blur_frame ? '🟢 ON' : '🔴 OFF'}`).catch(() => {});
 });
 
 bot.action('toggle_watermark', async (ctx) => {
@@ -562,7 +615,7 @@ bot.action('toggle_watermark', async (ctx) => {
     { $set: { watermark_enabled: cfg.watermark_enabled } }
   );
   await ctx.editMessageReplyMarkup(getEffectsKeyboard(cfg).reply_markup).catch(() => {});
-  await ctx.answerCbQuery(`Watermark: ${cfg.watermark_enabled ? 'ON' : 'OFF'}`).catch(() => {});
+  await ctx.answerCbQuery(`Watermark: ${cfg.watermark_enabled ? '🟢 ON' : '🔴 OFF'}`).catch(() => {});
 });
 
 // --- Visual Queue Manager ---
@@ -575,7 +628,16 @@ async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
     }
     const cfg = await getConfig(db);
     await ctx.deleteMessage().catch(() => {});
-    return ctx.replyWithHTML(await renderAdminText(db, cfg), getAdminKeyboard(cfg));
+    if (cfg.panel_msg_id) {
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        cfg.panel_msg_id,
+        undefined,
+        await renderAdminText(db, cfg),
+        { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
+      ).catch(() => {});
+    }
+    return;
   }
 
   const safeIndex = Math.max(0, Math.min(index, items.length - 1));
@@ -656,11 +718,25 @@ bot.action('q_back_panel', async (ctx) => {
   const db = await getDb();
   const cfg = await getConfig(db);
   await ctx.deleteMessage().catch(() => {});
-  await ctx.replyWithHTML(await renderAdminText(db, cfg), getAdminKeyboard(cfg));
+  if (cfg.panel_msg_id) {
+    await bot.telegram.editMessageText(
+      ADMIN_ID,
+      cfg.panel_msg_id,
+      undefined,
+      await renderAdminText(db, cfg),
+      { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
+    ).catch(() => {});
+  } else {
+    const sent = await ctx.replyWithHTML(await renderAdminText(db, cfg), getAdminKeyboard(cfg));
+    await db.collection('settings').updateOne(
+      { _id: 'main_config' },
+      { $set: { panel_msg_id: sent.message_id } }
+    );
+  }
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// --- Text Input Handler ---
+// --- Text Input Handler (Auto-Deletes User Input & Edits Panel In-Place) ---
 bot.on('text', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
   const db = await getDb();
@@ -668,11 +744,23 @@ bot.on('text', async (ctx) => {
 
   if (cfg.admin_state === 'waiting_for_time') {
     const text = ctx.message.text.trim();
+    await ctx.deleteMessage().catch(() => {});
     const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+
     if (!timeRegex.test(text)) {
-      return ctx.reply('⚠️ Invalid format! Send time as <code>HH:MM</code> (e.g., <code>09:30</code>):', {
-        parse_mode: 'HTML'
-      });
+      if (cfg.panel_msg_id) {
+        await bot.telegram.editMessageText(
+          ADMIN_ID,
+          cfg.panel_msg_id,
+          undefined,
+          '⚠️ <b>Invalid format!</b>\nSend time in 24h format (e.g., <code>09:30</code> or <code>20:00</code>):',
+          {
+            parse_mode: 'HTML',
+            ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'admin_ui_times')]])
+          }
+        ).catch(() => {});
+      }
+      return;
     }
 
     const [h, m] = text.split(':');
@@ -687,15 +775,25 @@ bot.on('text', async (ctx) => {
     );
 
     const updatedCfg = await getConfig(db);
-    return ctx.reply(`✅ <b>${formattedTime}</b> added to schedule!`, {
-      parse_mode: 'HTML',
-      ...getTimesKeyboard(updatedCfg.schedule_times)
-    });
+    if (cfg.panel_msg_id) {
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        cfg.panel_msg_id,
+        undefined,
+        `⏰ <b>SCHEDULE TIMES (Sri Lanka Time)</b>\n\n✅ Added <b>${formattedTime}</b>!`,
+        {
+          parse_mode: 'HTML',
+          ...getTimesKeyboard(updatedCfg.schedule_times)
+        }
+      ).catch(() => {});
+    }
+    return;
   }
 
   if (cfg.admin_state === 'waiting_for_caption') {
     const rawText = ctx.message.text;
     const entities = ctx.message.entities || [];
+    await ctx.deleteMessage().catch(() => {});
 
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
@@ -709,8 +807,18 @@ bot.on('text', async (ctx) => {
     );
 
     const updatedCfg = await getConfig(db);
-    await ctx.reply('✅ <b>Caption saved with your Telegram formatting!</b>', { parse_mode: 'HTML' });
-    return ctx.replyWithHTML(await renderAdminText(db, updatedCfg), getAdminKeyboard(updatedCfg));
+    if (cfg.panel_msg_id) {
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        cfg.panel_msg_id,
+        undefined,
+        await renderAdminText(db, updatedCfg),
+        {
+          parse_mode: 'HTML',
+          ...getAdminKeyboard(updatedCfg)
+        }
+      ).catch(() => {});
+    }
   }
 });
 
@@ -721,7 +829,7 @@ module.exports = async (req, res) => {
   try {
     const db = await getDb();
 
-    // 1. GitHub Actions Cron Ping (GET)
+    // 1. Cron Ping (GET - cron-job.org)
     if (req.method === 'GET') {
       const cfg = await getConfig(db);
 
