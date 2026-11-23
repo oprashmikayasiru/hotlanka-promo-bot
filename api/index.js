@@ -780,7 +780,7 @@ bot.action('cap_menu_video', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// Non-Destructive Post Preview (Invisible Zero-Width Anchor Keeps Reply Keyboard Active Without Visible Text)
+// Non-Destructive Post Preview (Reply Keyboard Opens BEFORE Preview Post So Nothing Appears Below It)
 bot.action(/preview_post_(photo|video)/, async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const targetType = ctx.match[1];
@@ -798,9 +798,12 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
     [Markup.button.url('Contact Admin', CONTACT_ADMIN_URL)]
   ]);
 
-  const replyCloseKeyboard = Markup.keyboard([['🗑 Close Preview']])
-    .resize()
-    .oneTime();
+  const replyCloseKeyboard = {
+    reply_markup: {
+      keyboard: [[{ text: '🗑 Close Preview' }]],
+      resize_keyboard: true
+    }
+  };
 
   if (targetType === 'photo') {
     const samplePhoto = await db.collection('queue')
@@ -815,14 +818,16 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
 
     await ctx.answerCbQuery().catch(() => {});
     try {
+      const sentAnchor = await ctx.reply('👁 <i>Preview Mode</i>', {
+        parse_mode: 'HTML',
+        ...replyCloseKeyboard
+      });
       const mediaSource = await buildTransformedPhoto(samplePhoto.file_id, cfg);
       const captionPayload = getCaptionPayload(cfg, 'photo');
       const sentPreview = await ctx.replyWithPhoto(mediaSource, {
         ...captionPayload,
         ...postInlineKeyboard
       });
-      // Zero-width space keeps reply keyboard visible with zero visible text message
-      const sentAnchor = await ctx.reply('\u3164', replyCloseKeyboard);
       await db.collection('settings').updateOne(
         { _id: 'main_config' },
         { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentAnchor.message_id } }
@@ -846,6 +851,10 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
 
   await ctx.answerCbQuery().catch(() => {});
   try {
+    const sentAnchor = await ctx.reply('👁 <i>Preview Mode</i>', {
+      parse_mode: 'HTML',
+      ...replyCloseKeyboard
+    });
     const captionPayload = getCaptionPayload(cfg, 'video');
     let sentPreview;
     if (sampleVideo.media_type === 'animation') {
@@ -860,7 +869,6 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...postInlineKeyboard
       });
     }
-    const sentAnchor = await ctx.reply('\u3164', replyCloseKeyboard);
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
       { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentAnchor.message_id } }
@@ -1057,7 +1065,7 @@ bot.on('text', async (ctx) => {
   const cfg = await getConfig(db);
   const rawText = ctx.message.text;
 
-  // Handle Reply Keyboard "Close Preview" button cleanly
+  // Handle Reply Keyboard "🗑 Close Preview" button cleanly
   if (rawText.trim() === '🗑 Close Preview') {
     await ctx.deleteMessage().catch(() => {});
     if (cfg.preview_msg_id) {
@@ -1070,7 +1078,7 @@ bot.on('text', async (ctx) => {
       { _id: 'main_config' },
       { $set: { preview_msg_id: null, preview_hint_id: null } }
     );
-    const removedMsg = await ctx.reply('\u3164', Markup.removeKeyboard());
+    const removedMsg = await ctx.reply('✅ Preview closed.', Markup.removeKeyboard());
     await bot.telegram.deleteMessage(ADMIN_ID, removedMsg.message_id).catch(() => {});
     return;
   }
