@@ -71,6 +71,8 @@ async function getConfig(db) {
       schedule_times: ['09:00', '14:30', '20:00'],
       caption_text: '🔥 NEW UPDATE ADDED TO VIP!\n\n✅ Full Album & Videos available now.\n💰 VIP Access: Rs. 500/= Only',
       caption_entities: [],
+      video_caption_text: '🎬 NEW VIP VIDEO PREVIEW!\n\n✅ Watch Full Uncut Video inside VIP.\n💰 VIP Access: Rs. 500/= Only',
+      video_caption_entities: [],
       blur_frame: true,
       watermark_enabled: true,
       watermark_text: 'Hot Lanka',
@@ -82,11 +84,33 @@ async function getConfig(db) {
       is_posting_locked: false,
       lock_timestamp: 0,
       admin_state: null,
-      panel_msg_id: null
+      panel_msg_id: null,
+      preview_msg_id: null
     };
     await db.collection('settings').insertOne(cfg);
   }
   return cfg;
+}
+
+// --- Get Caption & Entities Based on Media Type (Photo vs Video/GIF) ---
+function getCaptionPayload(cfg, itemType) {
+  const isMotion = itemType === 'video' || itemType === 'animation';
+  if (isMotion) {
+    const text = cfg.video_caption_text !== undefined ? cfg.video_caption_text : (cfg.caption_text || '');
+    const entities = cfg.video_caption_text !== undefined
+      ? (cfg.video_caption_entities || [])
+      : (cfg.caption_entities || []);
+    return {
+      caption: text,
+      caption_entities: entities.length > 0 ? entities : undefined
+    };
+  }
+  const text = cfg.caption_text || '';
+  const entities = cfg.caption_entities || [];
+  return {
+    caption: text,
+    caption_entities: entities.length > 0 ? entities : undefined
+  };
 }
 
 // --- Build Uniform 1080x1350 Cloudinary URL for Photos ---
@@ -188,9 +212,9 @@ async function publishNextQueueItem(db, cfg) {
         : 'photo';
 
     try {
+      const captionPayload = getCaptionPayload(cfg, itemType);
       const postOptions = {
-        caption: cfg.caption_text || '',
-        caption_entities: cfg.caption_entities && cfg.caption_entities.length > 0 ? cfg.caption_entities : undefined,
+        ...captionPayload,
         ...fixedButton
       };
 
@@ -681,23 +705,173 @@ bot.action(/del_time_(.+)/, async (ctx) => {
   await ctx.answerCbQuery(`🗑 Removed ${timeToRemove}`).catch(() => {});
 });
 
-// Set Caption (In-Place Edit)
+// --- Set Caption Menu (Photo Caption & Video Caption + Post Preview) ---
 bot.action('admin_ui_caption', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
   const msgId = ctx.callbackQuery.message?.message_id;
   await db.collection('settings').updateOne(
     { _id: 'main_config' },
-    { $set: { admin_state: 'waiting_for_caption', panel_msg_id: msgId } }
+    { $set: { admin_state: null, panel_msg_id: msgId } }
   );
+
   await ctx.editMessageText(
-    '📝 <b>SET POST CAPTION</b>\n\nType and send your formatted caption now (Bold, Italic, Quote, Emojis):',
+    '📝 <b>CAPTION SETTINGS</b>\n\nChoose which post caption you want to edit or preview:',
     {
       parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([[Markup.button.callback('❌ Cancel', 'admin_refresh')]])
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('🖼 Photo Caption', 'cap_menu_photo'),
+          Markup.button.callback('🎬 Video Caption', 'cap_menu_video')
+        ],
+        [Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]
+      ])
     }
   ).catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
+});
+
+bot.action('cap_menu_photo', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
+  const db = await getDb();
+  const msgId = ctx.callbackQuery.message?.message_id;
+  await db.collection('settings').updateOne(
+    { _id: 'main_config' },
+    { $set: { admin_state: 'waiting_for_photo_caption', panel_msg_id: msgId } }
+  );
+
+  await ctx.editMessageText(
+    '🖼 <b>SET PHOTO CAPTION</b>\n\n' +
+    'Type and send your formatted caption for <b>Photos</b> now (Bold, Italic, Quote, Emojis),\n' +
+    'or tap <b>Preview Post</b> below to see how it looks with a queued photo:',
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('👁 Preview Post', 'preview_post_photo')],
+        [Markup.button.callback('🔙 Back', 'admin_ui_caption')]
+      ])
+    }
+  ).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+});
+
+bot.action('cap_menu_video', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
+  const db = await getDb();
+  const msgId = ctx.callbackQuery.message?.message_id;
+  await db.collection('settings').updateOne(
+    { _id: 'main_config' },
+    { $set: { admin_state: 'waiting_for_video_caption', panel_msg_id: msgId } }
+  );
+
+  await ctx.editMessageText(
+    '🎬 <b>SET VIDEO CAPTION</b>\n\n' +
+    'Type and send your formatted caption for <b>Videos</b> now (Bold, Italic, Quote, Emojis),\n' +
+    'or tap <b>Preview Post</b> below to see how it looks with a queued video:',
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('👁 Preview Post', 'preview_post_video')],
+        [Markup.button.callback('🔙 Back', 'admin_ui_caption')]
+      ])
+    }
+  ).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+});
+
+// Non-Destructive Post Preview with Reply Keyboard "Close Preview" Button
+bot.action(/preview_post_(photo|video)/, async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
+  const targetType = ctx.match[1];
+  const db = await getDb();
+  const cfg = await getConfig(db);
+
+  // Clean up any previous unclosed preview message first
+  if (cfg.preview_msg_id) {
+    await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_msg_id).catch(() => {});
+  }
+
+  // Exact channel inline button on the preview post
+  const postInlineKeyboard = Markup.inlineKeyboard([
+    [Markup.button.url('Contact Admin', CONTACT_ADMIN_URL)]
+  ]);
+
+  // Bottom Reply Keyboard (below "Write a message...")
+  const replyCloseKeyboard = Markup.keyboard([['🗑 Close Preview']])
+    .resize()
+    .oneTime();
+
+  if (targetType === 'photo') {
+    const samplePhoto = await db.collection('queue')
+      .find({ $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }] })
+      .sort({ order: 1, message_id: 1, _id: 1 })
+      .limit(1)
+      .next();
+
+    if (!samplePhoto) {
+      return ctx.answerCbQuery('📭 No photos in queue to preview! Send a photo first.', { show_alert: true }).catch(() => {});
+    }
+
+    await ctx.answerCbQuery('⏳ Generating photo preview...').catch(() => {});
+    try {
+      const mediaSource = await buildTransformedPhoto(samplePhoto.file_id, cfg);
+      const captionPayload = getCaptionPayload(cfg, 'photo');
+      const sentPreview = await ctx.replyWithPhoto(mediaSource, {
+        ...captionPayload,
+        ...postInlineKeyboard
+      });
+      const sentHint = await ctx.reply('👁 <b>Photo Post Preview</b> — Tap <b>Close Preview</b> below when done.', {
+        parse_mode: 'HTML',
+        ...replyCloseKeyboard
+      });
+      await db.collection('settings').updateOne(
+        { _id: 'main_config' },
+        { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentHint.message_id } }
+      );
+    } catch (err) {
+      await ctx.answerCbQuery(`❌ Preview failed: ${err.message}`, { show_alert: true }).catch(() => {});
+    }
+    return;
+  }
+
+  // Video / GIF Preview
+  const sampleVideo = await db.collection('queue')
+    .find({ media_type: { $in: ['video', 'animation'] } })
+    .sort({ order: 1, message_id: 1, _id: 1 })
+    .limit(1)
+    .next();
+
+  if (!sampleVideo) {
+    return ctx.answerCbQuery('📭 No videos in queue to preview! Send a video first.', { show_alert: true }).catch(() => {});
+  }
+
+  await ctx.answerCbQuery('⏳ Loading video preview...').catch(() => {});
+  try {
+    const captionPayload = getCaptionPayload(cfg, 'video');
+    let sentPreview;
+    if (sampleVideo.media_type === 'animation') {
+      sentPreview = await ctx.replyWithAnimation(sampleVideo.file_id, {
+        ...captionPayload,
+        ...postInlineKeyboard
+      });
+    } else {
+      sentPreview = await ctx.replyWithVideo(sampleVideo.file_id, {
+        ...captionPayload,
+        supports_streaming: true,
+        ...postInlineKeyboard
+      });
+    }
+    const sentHint = await ctx.reply('👁 <b>Video Post Preview</b> — Tap <b>Close Preview</b> below when done.', {
+      parse_mode: 'HTML',
+      ...replyCloseKeyboard
+    });
+    await db.collection('settings').updateOne(
+      { _id: 'main_config' },
+      { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentHint.message_id } }
+    );
+  } catch (err) {
+    await ctx.answerCbQuery(`❌ Preview failed: ${err.message}`, { show_alert: true }).catch(() => {});
+  }
 });
 
 // Image Effects Menu (In-Place Edit)
@@ -880,14 +1054,35 @@ bot.action('q_back_panel', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// --- Text Input Handler (Auto-Deletes User Input & Edits Panel In-Place) ---
+// --- Text Input Handler (Handles Close Preview Keyboard + Auto-Deletes User Input) ---
 bot.on('text', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
   const db = await getDb();
   const cfg = await getConfig(db);
+  const rawText = ctx.message.text;
+
+  // Handle Reply Keyboard "Close Preview" button
+  if (rawText.trim() === '🗑 Close Preview') {
+    await ctx.deleteMessage().catch(() => {});
+    if (cfg.preview_msg_id) {
+      await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_msg_id).catch(() => {});
+    }
+    if (cfg.preview_hint_id) {
+      await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_hint_id).catch(() => {});
+    }
+    await db.collection('settings').updateOne(
+      { _id: 'main_config' },
+      { $set: { preview_msg_id: null, preview_hint_id: null } }
+    );
+    const removedMsg = await ctx.reply('✅ Preview closed.', Markup.removeKeyboard());
+    setTimeout(() => {
+      bot.telegram.deleteMessage(ADMIN_ID, removedMsg.message_id).catch(() => {});
+    }, 800);
+    return;
+  }
 
   if (cfg.admin_state === 'waiting_for_time') {
-    const text = ctx.message.text.trim();
+    const text = rawText.trim();
     await ctx.deleteMessage().catch(() => {});
     const timeRegex = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
 
@@ -934,8 +1129,7 @@ bot.on('text', async (ctx) => {
     return;
   }
 
-  if (cfg.admin_state === 'waiting_for_caption') {
-    const rawText = ctx.message.text;
+  if (cfg.admin_state === 'waiting_for_photo_caption') {
     const entities = ctx.message.entities || [];
     await ctx.deleteMessage().catch(() => {});
 
@@ -950,16 +1144,51 @@ bot.on('text', async (ctx) => {
       }
     );
 
-    const updatedCfg = await getConfig(db);
     if (cfg.panel_msg_id) {
       await bot.telegram.editMessageText(
         ADMIN_ID,
         cfg.panel_msg_id,
         undefined,
-        await renderAdminText(db, updatedCfg),
+        '🖼 <b>PHOTO CAPTION UPDATED!</b>\n\nTap <b>Preview Post</b> below to verify how it looks:',
         {
           parse_mode: 'HTML',
-          ...getAdminKeyboard(updatedCfg)
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('👁 Preview Post', 'preview_post_photo')],
+            [Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]
+          ])
+        }
+      ).catch(() => {});
+    }
+    return;
+  }
+
+  if (cfg.admin_state === 'waiting_for_video_caption') {
+    const entities = ctx.message.entities || [];
+    await ctx.deleteMessage().catch(() => {});
+
+    await db.collection('settings').updateOne(
+      { _id: 'main_config' },
+      {
+        $set: {
+          video_caption_text: rawText,
+          video_caption_entities: entities,
+          admin_state: null
+        }
+      }
+    );
+
+    if (cfg.panel_msg_id) {
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        cfg.panel_msg_id,
+        undefined,
+        '🎬 <b>VIDEO CAPTION UPDATED!</b>\n\nTap <b>Preview Post</b> below to verify how it looks:',
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('👁 Preview Post', 'preview_post_video')],
+            [Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]
+          ])
         }
       ).catch(() => {});
     }
