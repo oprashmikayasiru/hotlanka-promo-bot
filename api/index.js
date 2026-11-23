@@ -95,7 +95,7 @@ async function buildTransformedMedia(fileId, cfg) {
     );
   }
 
-  // Case 2: Blur Frame ON (With or Without Watermark)
+  // Case 2: Blur Frame ON (Frosted Glassmorphism + Optional Watermark)
   const base64Url = Buffer.from(rawUrl)
     .toString('base64')
     .replace(/\+/g, '-')
@@ -109,7 +109,9 @@ async function buildTransformedMedia(fileId, cfg) {
   return (
     `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/` +
     `w_1080,h_1350,c_fill/` +
-    `e_blur:1800,e_brightness:-35/` +
+    `e_pixelate:18/` +
+    `e_blur:2000/` +
+    `e_brightness:-35/` +
     `l_fetch:${base64Url},w_920,h_1210,c_fit,r_24,bo_3px_solid_rgb:ffffff55,g_center` +
     `${wmLayer}/` +
     `f_jpg,q_90/` +
