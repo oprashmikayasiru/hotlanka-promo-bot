@@ -822,7 +822,7 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...postInlineKeyboard
       });
       // Zero-width space keeps reply keyboard visible with zero visible text message
-      const sentAnchor = await ctx.reply('\u200B', replyCloseKeyboard);
+      const sentAnchor = await ctx.reply('\u3164', replyCloseKeyboard);
       await db.collection('settings').updateOne(
         { _id: 'main_config' },
         { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentAnchor.message_id } }
@@ -860,7 +860,7 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...postInlineKeyboard
       });
     }
-    const sentAnchor = await ctx.reply('\u200B', replyCloseKeyboard);
+    const sentAnchor = await ctx.reply('\u3164', replyCloseKeyboard);
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
       { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentAnchor.message_id } }
@@ -1070,7 +1070,7 @@ bot.on('text', async (ctx) => {
       { _id: 'main_config' },
       { $set: { preview_msg_id: null, preview_hint_id: null } }
     );
-    const removedMsg = await ctx.reply('\u200B', Markup.removeKeyboard());
+    const removedMsg = await ctx.reply('\u3164', Markup.removeKeyboard());
     await bot.telegram.deleteMessage(ADMIN_ID, removedMsg.message_id).catch(() => {});
     return;
   }
