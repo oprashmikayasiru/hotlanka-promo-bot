@@ -4,7 +4,6 @@
   "description": "Telegram VIP Promo Queue Bot",
   "main": "api/index.js",
   "dependencies": {
-    "jimp": "^0.22.12",
     "mongodb": "^6.5.0",
     "telegraf": "^4.16.3"
   },
