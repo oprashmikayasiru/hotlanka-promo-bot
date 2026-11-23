@@ -37,8 +37,8 @@ async function getDb() {
   if (!clientPromise) {
     const client = new MongoClient(MONGODB_URI, {
       maxPoolSize: 10,
-      serverSelectionTimeoutMS: 8000,
-      connectTimeoutMS: 8000
+      serverSelectionTimeoutMS: 6000,
+      connectTimeoutMS: 6000
     });
     clientPromise = client.connect();
   }
@@ -71,187 +71,54 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Pure Raw RGBA Pixel Helpers (Zero SVG / Zero librsvg) ---
-function createRoundedMaskRaw(w, h, r) {
-  const buf = Buffer.alloc(w * h * 4);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      let alpha = 255;
-      let dx = 0;
-      let dy = 0;
-      if (x < r && y < r) {
-        dx = r - x;
-        dy = r - y;
-      } else if (x >= w - r && y < r) {
-        dx = x - (w - r - 1);
-        dy = r - y;
-      } else if (x < r && y >= h - r) {
-        dx = r - x;
-        dy = y - (h - r - 1);
-      } else if (x >= w - r && y >= h - r) {
-        dx = x - (w - r - 1);
-        dy = y - (h - r - 1);
-      }
-      if (dx > 0 || dy > 0) {
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > r + 0.5) alpha = 0;
-        else if (dist > r - 0.5) alpha = Math.round((r + 0.5 - dist) * 255);
-      }
-      const idx = (y * w + x) * 4;
-      buf[idx] = 255;
-      buf[idx + 1] = 255;
-      buf[idx + 2] = 255;
-      buf[idx + 3] = alpha;
+// --- Lightweight Bitmap Font Renderer for "HOT LANKA" (< 5ms, Zero Loops Lag) ---
+const BITMAP_CHARS = {
+  H: ['1001', '1001', '1111', '1001', '1001'],
+  O: ['1111', '1001', '1001', '1001', '1111'],
+  T: ['11111', '00100', '00100', '00100', '00100'],
+  L: ['1000', '1000', '1000', '1000', '1111'],
+  A: ['0110', '1001', '1111', '1001', '1001'],
+  N: ['1001', '1101', '1011', '1001', '1001'],
+  K: ['1001', '1010', '1100', '1010', '1001'],
+  ' ': ['00', '00', '00', '00', '00']
+};
+
+function createFastWatermarkBuffer(targetWidth) {
+  const text = 'HOT LANKA';
+  const grid = ['', '', '', '', ''];
+  for (const ch of text) {
+    const glyph = BITMAP_CHARS[ch] || BITMAP_CHARS[' '];
+    for (let r = 0; r < 5; r++) {
+      grid[r] += glyph[r] + '0';
     }
   }
-  return buf;
-}
 
-function createGlassBorderRaw(canvasW, canvasH, padX, padY, innerW, innerH, r) {
-  const buf = Buffer.alloc(canvasW * canvasH * 4);
-  const stroke = 2.5;
-  for (let y = padY; y < padY + innerH; y++) {
-    const iy = y - padY;
-    for (let x = padX; x < padX + innerW; x++) {
-      const ix = x - padX;
-      let distFromEdge = Math.min(ix, innerW - 1 - ix, iy, innerH - 1 - iy);
+  const cols = grid[0].length;
+  const rows = 5;
+  const smallRaw = Buffer.alloc(cols * rows * 4, 0);
 
-      let dx = 0;
-      let dy = 0;
-      if (ix < r && iy < r) {
-        dx = r - ix;
-        dy = r - iy;
-      } else if (ix >= innerW - r && iy < r) {
-        dx = ix - (innerW - r - 1);
-        dy = r - iy;
-      } else if (ix < r && iy >= innerH - r) {
-        dx = r - ix;
-        dy = iy - (innerH - r - 1);
-      } else if (ix >= innerW - r && iy >= innerH - r) {
-        dx = ix - (innerW - r - 1);
-        dy = iy - (innerH - r - 1);
-      }
-      if (dx > 0 || dy > 0) {
-        distFromEdge = r - Math.sqrt(dx * dx + dy * dy);
-      }
-
-      if (distFromEdge >= 0 && distFromEdge <= stroke) {
-        const idx = (y * canvasW + x) * 4;
-        buf[idx] = 255;
-        buf[idx + 1] = 255;
-        buf[idx + 2] = 255;
-        buf[idx + 3] = 75;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (grid[r][c] === '1') {
+        const idx = (r * cols + c) * 4;
+        smallRaw[idx] = 255;
+        smallRaw[idx + 1] = 255;
+        smallRaw[idx + 2] = 255;
+        smallRaw[idx + 3] = 85; // ~33% subtle white opacity
       }
     }
   }
-  return buf;
+
+  const outW = Math.max(120, Math.round(targetWidth * 0.65));
+  const outH = Math.max(20, Math.round((outW / cols) * rows));
+
+  return sharp(smallRaw, { raw: { width: cols, height: rows, channels: 4 } })
+    .resize(outW, outH, { kernel: 'nearest' })
+    .png()
+    .toBuffer();
 }
 
-function drawCapsule(buf, w, h, x1, y1, x2, y2, radius, alpha) {
-  const minX = Math.max(0, Math.floor(Math.min(x1, x2) - radius - 2));
-  const maxX = Math.min(w - 1, Math.ceil(Math.max(x1, x2) + radius + 2));
-  const minY = Math.max(0, Math.floor(Math.min(y1, y2) - radius - 2));
-  const maxY = Math.min(h - 1, Math.ceil(Math.max(y1, y2) + radius + 2));
-  const vx = x2 - x1;
-  const vy = y2 - y1;
-  const lenSq = vx * vx + vy * vy;
-
-  for (let y = minY; y <= maxY; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      let t = lenSq === 0 ? 0 : ((x - x1) * vx + (y - y1) * vy) / lenSq;
-      t = Math.max(0, Math.min(1, t));
-      const px = x1 + t * vx;
-      const py = y1 + t * vy;
-      const dist = Math.sqrt((x - px) * (x - px) + (y - py) * (y - py));
-      if (dist <= radius + 0.8) {
-        const cov = dist <= radius - 0.8 ? 1 : (radius + 0.8 - dist) / 1.6;
-        const a = Math.round(alpha * cov);
-        const idx = (y * w + x) * 4;
-        if (a > buf[idx + 3]) {
-          buf[idx] = 255;
-          buf[idx + 1] = 255;
-          buf[idx + 2] = 255;
-          buf[idx + 3] = a;
-        }
-      }
-    }
-  }
-}
-
-function drawRing(buf, w, h, cx, cy, rx, ry, thickness, alpha) {
-  const minX = Math.max(0, Math.floor(cx - rx - thickness - 2));
-  const maxX = Math.min(w - 1, Math.ceil(cx + rx + thickness + 2));
-  const minY = Math.max(0, Math.floor(cy - ry - thickness - 2));
-  const maxY = Math.min(h - 1, Math.ceil(cy + ry + thickness + 2));
-
-  for (let y = minY; y <= maxY; y++) {
-    for (let x = minX; x <= maxX; x++) {
-      const nx = (x - cx) / rx;
-      const ny = (y - cy) / ry;
-      const d = Math.sqrt(nx * nx + ny * ny);
-      const approxDist = Math.abs(d - 1) * ((rx + ry) * 0.5);
-      if (approxDist <= thickness + 0.8) {
-        const cov = approxDist <= thickness - 0.8 ? 1 : (thickness + 0.8 - approxDist) / 1.6;
-        const a = Math.round(alpha * cov);
-        const idx = (y * w + x) * 4;
-        if (a > buf[idx + 3]) {
-          buf[idx] = 255;
-          buf[idx + 1] = 255;
-          buf[idx + 2] = 255;
-          buf[idx + 3] = a;
-        }
-      }
-    }
-  }
-}
-
-function createHotLankaWatermarkRaw(w, h) {
-  const buf = Buffer.alloc(w * h * 4);
-  const targetW = w * 0.72;
-  const s = targetW / 630;
-  const ox = (w - targetW) / 2;
-  const oy = (h - 110 * s) / 2;
-  const r = Math.max(2, 6.2 * s);
-  const alpha = 82; // ~32% subtle opacity
-
-  const line = (x1, y1, x2, y2) =>
-    drawCapsule(buf, w, h, ox + x1 * s, oy + y1 * s, ox + x2 * s, oy + y2 * s, r, alpha);
-  const ring = (cx, cy, rx, ry) =>
-    drawRing(buf, w, h, ox + cx * s, oy + cy * s, rx * s, ry * s, r, alpha);
-
-  // H
-  line(15, 15, 15, 95);
-  line(15, 55, 62, 55);
-  line(62, 15, 62, 95);
-  // o
-  ring(112, 70, 24, 25);
-  // t
-  line(170, 22, 170, 88);
-  line(170, 88, 186, 95);
-  line(154, 45, 188, 45);
-  // L
-  line(255, 15, 255, 95);
-  line(255, 95, 305, 95);
-  // a
-  ring(348, 71, 22, 24);
-  line(370, 47, 370, 95);
-  // n
-  line(404, 47, 404, 95);
-  line(404, 58, 422, 47);
-  line(422, 47, 442, 56);
-  line(442, 56, 442, 95);
-  // k
-  line(476, 15, 476, 95);
-  line(518, 47, 476, 73);
-  line(492, 63, 522, 95);
-  // a
-  ring(568, 71, 22, 24);
-  line(590, 47, 590, 95);
-
-  return buf;
-}
-
-// --- Ultra-Fast Image Processing (< 0.3s, Zero SVG) ---
+// --- Ultra-Fast C++ Native Image Processing (< 0.3 seconds total) ---
 async function processImageWithEffects(fileId, cfg) {
   const fileLink = await bot.telegram.getFileLink(fileId);
   const response = await fetch(fileLink.href);
@@ -262,29 +129,22 @@ async function processImageWithEffects(fileId, cfg) {
     return inputBuffer;
   }
 
-  const normalizedBuffer = await sharp(inputBuffer)
-    .resize({ width: 900, withoutEnlargement: true })
-    .jpeg({ quality: 90 })
+  // Resize once to max 800px width for instant speed
+  let foregroundBuffer = await sharp(inputBuffer)
+    .resize({ width: 800, withoutEnlargement: true })
+    .jpeg({ quality: 88 })
     .toBuffer();
 
-  const metadata = await sharp(normalizedBuffer).metadata();
-  const origW = metadata.width || 720;
-  const origH = metadata.height || 1280;
-
-  let foregroundBuffer = normalizedBuffer;
+  const meta = await sharp(foregroundBuffer).metadata();
+  const origW = meta.width || 640;
+  const origH = meta.height || 1136;
 
   // 1. Apply Subtle Centered Watermark
   if (cfg.watermark_enabled) {
-    const wmRaw = createHotLankaWatermarkRaw(origW, origH);
-    foregroundBuffer = await sharp(normalizedBuffer)
-      .composite([
-        {
-          input: wmRaw,
-          raw: { width: origW, height: origH, channels: 4 },
-          left: 0,
-          top: 0
-        }
-      ])
+    const wmPng = await createFastWatermarkBuffer(origW);
+    foregroundBuffer = await sharp(foregroundBuffer)
+      .composite([{ input: wmPng, gravity: 'center' }])
+      .jpeg({ quality: 88 })
       .toBuffer();
   }
 
@@ -292,54 +152,47 @@ async function processImageWithEffects(fileId, cfg) {
     return foregroundBuffer;
   }
 
-  // 2. Apply Dynamic Glassmorphism Blurred Frame
-  const padX = Math.round(origW * 0.11);
-  const padY = Math.round(origH * 0.08);
+  // 2. Native C++ Glassmorphism Blurred Frame (Zero JS pixel loops)
+  const padX = Math.round(origW * 0.1);
+  const padY = Math.round(origH * 0.07);
   const canvasW = origW + padX * 2;
   const canvasH = origH + padY * 2;
-  const cornerRadius = Math.max(16, Math.round(origW * 0.035));
 
-  const smallBlur = await sharp(normalizedBuffer)
-    .resize(200, Math.max(200, Math.round((200 * canvasH) / canvasW)), { fit: 'cover' })
-    .blur(10)
-    .modulate({ brightness: 0.65 })
-    .toBuffer();
-
-  const blurredBg = await sharp(smallBlur)
+  // Tiny downscale + fast blur + upscale = instant silky glass background
+  const blurredBg = await sharp(inputBuffer)
+    .resize(160, Math.max(160, Math.round((160 * canvasH) / canvasW)), { fit: 'cover' })
+    .blur(8)
+    .modulate({ brightness: 0.62 })
     .resize(canvasW, canvasH, { fit: 'fill' })
     .toBuffer();
 
-  const maskRaw = createRoundedMaskRaw(origW, origH, cornerRadius);
-  const roundedForeground = await sharp(foregroundBuffer)
-    .ensureAlpha()
-    .composite([
-      {
-        input: maskRaw,
-        raw: { width: origW, height: origH, channels: 4 },
-        blend: 'dest-in'
-      }
-    ])
+  // Crisp subtle glass border using sharp native extend
+  const borderedForeground = await sharp(foregroundBuffer)
+    .extend({
+      top: 3,
+      bottom: 3,
+      left: 3,
+      right: 3,
+      background: { r: 255, g: 255, b: 255, alpha: 0.35 }
+    })
     .png()
     .toBuffer();
 
-  const borderRaw = createGlassBorderRaw(canvasW, canvasH, padX, padY, origW, origH, cornerRadius);
-
   return await sharp(blurredBg)
-    .composite([
-      { input: roundedForeground, left: padX, top: padY },
-      {
-        input: borderRaw,
-        raw: { width: canvasW, height: canvasH, channels: 4 },
-        left: 0,
-        top: 0
-      }
-    ])
-    .jpeg({ quality: 88 })
+    .composite([{ input: borderedForeground, gravity: 'center' }])
+    .jpeg({ quality: 86 })
     .toBuffer();
 }
 
 // --- Publish Single Next Valid Item from Queue ---
 async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
+  if (!TARGET_CHANNEL_ID) {
+    if (notifyAdmin) {
+      await bot.telegram.sendMessage(ADMIN_ID, '❌ TARGET_CHANNEL_ID is missing in Vercel!').catch(() => {});
+    }
+    return { status: 'error', reason: 'Missing TARGET_CHANNEL_ID' };
+  }
+
   const fixedButton = Markup.inlineKeyboard([
     [Markup.button.url('Contact Admin', CONTACT_ADMIN_URL)]
   ]);
@@ -368,7 +221,7 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
       await db.collection('queue').deleteOne({ _id: nextItem._id });
 
       if (notifyAdmin) {
-        await bot.telegram.sendMessage(ADMIN_ID, '🚀 Posted to channel!').catch(() => {});
+        await bot.telegram.sendMessage(ADMIN_ID, '🚀 Posted to Hot Lanka channel!').catch(() => {});
       }
 
       return { status: 'posted' };
@@ -394,7 +247,7 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
             `❌ Error posting: ${err.message}`
           ).catch(() => {});
         }
-        return { status: 'error' };
+        return { status: 'error', reason: err.message };
       }
     }
   }
@@ -610,13 +463,42 @@ bot.action('admin_toggle_status', async (ctx) => {
 
 bot.action('admin_post_now', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
-  await ctx.answerCbQuery('🚀 Publishing...').catch(() => {});
+  await ctx.answerCbQuery('⏳ Processing...').catch(() => {});
+  const statusMsg = await ctx.reply('⏳ <b>Processing & posting to channel...</b>', {
+    parse_mode: 'HTML'
+  }).catch(() => null);
+
   const db = await getDb();
   const cfg = await getConfig(db);
 
-  const res = await publishNextQueueItem(db, cfg, true);
-  if (res.status === 'empty') {
-    await ctx.reply('📭 Queue is empty! Send some screenshots first.').catch(() => {});
+  const res = await publishNextQueueItem(db, cfg, false);
+
+  if (statusMsg) {
+    if (res.status === 'posted') {
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        statusMsg.message_id,
+        undefined,
+        '🚀 <b>Posted to Hot Lanka channel!</b>',
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    } else if (res.status === 'empty') {
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        statusMsg.message_id,
+        undefined,
+        '📭 <b>Queue is empty!</b> Send some screenshots first.',
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    } else {
+      await bot.telegram.editMessageText(
+        ADMIN_ID,
+        statusMsg.message_id,
+        undefined,
+        `❌ <b>Error:</b> ${res.reason || 'Unknown error'}`,
+        { parse_mode: 'HTML' }
+      ).catch(() => {});
+    }
   }
 
   await ctx.editMessageText(await renderAdminText(db, cfg), {
