@@ -6,6 +6,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID;
+const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
 const CONTACT_ADMIN_URL = process.env.CONTACT_ADMIN_URL || 'https://t.me/LankaAdmin_bot';
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -57,6 +58,9 @@ async function getConfig(db) {
       schedule_times: ['09:00', '14:30', '20:00'],
       caption_text: '🔥 NEW UPDATE ADDED TO VIP!\n\n✅ Full Album & Videos available now.\n💰 VIP Access: Rs. 500/= Only',
       caption_entities: [],
+      blur_frame: true,
+      watermark_enabled: true,
+      watermark_text: 'Hot Lanka',
       pending_batch_count: 0,
       last_posted_slot: null,
       is_posting_locked: false,
@@ -67,7 +71,51 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Instant Direct Publishing via file_id ---
+// --- Build Zero-CPU Cloudinary Transformation URL ---
+async function buildTransformedMedia(fileId, cfg) {
+  const useBlur = cfg.blur_frame !== false;
+  const useWm = cfg.watermark_enabled !== false;
+
+  if ((!useBlur && !useWm) || !CLOUDINARY_CLOUD_NAME) {
+    return fileId;
+  }
+
+  const fileLink = await bot.telegram.getFileLink(fileId);
+  const rawUrl = fileLink.href;
+  const encodedUrl = encodeURIComponent(rawUrl);
+  const wmText = encodeURIComponent(cfg.watermark_text || 'Hot Lanka');
+
+  // Case 1: Only Watermark ON (No Blur Frame)
+  if (!useBlur && useWm) {
+    return (
+      `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/` +
+      `f_jpg,q_90/` +
+      `l_text:Arial_58_bold:${wmText},co_white,o_35,g_center/` +
+      `${encodedUrl}`
+    );
+  }
+
+  // Case 2: Blur Frame ON (With or Without Watermark)
+  const base64Url = Buffer.from(rawUrl)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  const wmLayer = useWm
+    ? `/l_text:Arial_64_bold:${wmText},co_white,o_35,g_center`
+    : '';
+
+  return (
+    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/` +
+    `w_1080,h_1350,c_fill,e_blur:1400,e_brightness:-35,f_jpg,q_90/` +
+    `l_fetch:${base64Url},w_920,h_1210,c_fit,r_24,bo_3px_solid_rgb:ffffff55,g_center` +
+    `${wmLayer}/` +
+    `${encodedUrl}`
+  );
+}
+
+// --- Publish Single Next Valid Item from Queue ---
 async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
   if (!TARGET_CHANNEL_ID) {
     if (notifyAdmin) {
@@ -92,13 +140,15 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
     }
 
     try {
+      const mediaSource = await buildTransformedMedia(nextItem.file_id, cfg);
+
       const postOptions = {
         caption: cfg.caption_text || '',
         caption_entities: cfg.caption_entities && cfg.caption_entities.length > 0 ? cfg.caption_entities : undefined,
         ...fixedButton
       };
 
-      await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, nextItem.file_id, postOptions);
+      await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, mediaSource, postOptions);
       await db.collection('queue').deleteOne({ _id: nextItem._id });
 
       if (notifyAdmin) {
@@ -132,7 +182,7 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
   }
 }
 
-// --- Batch Execution ---
+// --- Time-Budgeted Batch Execution (7.5s Cutoff + Auto Roll-over) ---
 async function runScheduledBatch(db, startTime) {
   const cfg = await getConfig(db);
   if (!cfg.is_active || cfg.is_posting_locked) return;
@@ -179,13 +229,16 @@ async function runScheduledBatch(db, startTime) {
 async function renderAdminText(db, cfg) {
   const queueCount = await db.collection('queue').countDocuments({});
   const timesStr = (cfg.schedule_times || []).sort().join(', ') || 'None';
+  const frameStatus = cfg.blur_frame !== false ? '🟢' : '🔴';
+  const wmStatus = cfg.watermark_enabled !== false ? '🟢' : '🔴';
 
   return (
     `⚙️ <b>VIP PROMO CONTROL PANEL</b>\n\n` +
     `📊 <b>Status:</b> ${cfg.is_active ? '🟢 ACTIVE' : '🔴 PAUSED'}\n` +
     `📦 <b>Daily Limit:</b> ${cfg.daily_limit} Posts / Day\n` +
     `⏰ <b>Schedule:</b> ${timesStr}\n` +
-    `🖼 <b>Queue:</b> ${queueCount} Pending`
+    `🖼 <b>Queue:</b> ${queueCount} Pending\n` +
+    `🎨 <b>Effects:</b> Blur Frame ${frameStatus} | Watermark ${wmStatus}`
   );
 }
 
@@ -201,6 +254,7 @@ function getAdminKeyboard(cfg) {
       Markup.button.callback('📝 Set Caption', 'admin_ui_caption'),
       Markup.button.callback('🖼 Manage Queue', 'admin_queue_0')
     ],
+    [Markup.button.callback('🎨 Image Effects', 'admin_ui_effects')],
     [
       Markup.button.callback(activeLabel, 'admin_toggle_status'),
       Markup.button.callback('🔄 Refresh', 'admin_refresh')
@@ -219,6 +273,26 @@ function getTimesKeyboard(times) {
   buttons.push([Markup.button.callback('➕ Add Custom Time', 'admin_ui_add_time')]);
   buttons.push([Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]);
   return Markup.inlineKeyboard(buttons);
+}
+
+function getEffectsKeyboard(cfg) {
+  const blurOn = cfg.blur_frame !== false;
+  const wmOn = cfg.watermark_enabled !== false;
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback(
+        `🖼 Blur Frame: ${blurOn ? '🟢 ON' : '🔴 OFF'}`,
+        'toggle_blur_frame'
+      )
+    ],
+    [
+      Markup.button.callback(
+        `💧 Watermark: ${wmOn ? '🟢 ON' : '🔴 OFF'}`,
+        'toggle_watermark'
+      )
+    ],
+    [Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]
+  ]);
 }
 
 // --- Commands ---
@@ -443,6 +517,47 @@ bot.action('admin_ui_caption', async (ctx) => {
     { parse_mode: 'HTML' }
   );
   await ctx.answerCbQuery().catch(() => {});
+});
+
+// Image Effects Menu
+bot.action('admin_ui_effects', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
+  const db = await getDb();
+  const cfg = await getConfig(db);
+  await ctx.editMessageText(
+    '🎨 <b>IMAGE EFFECTS SETTINGS</b>\n\nToggle effects individually below:',
+    {
+      parse_mode: 'HTML',
+      ...getEffectsKeyboard(cfg)
+    }
+  ).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+});
+
+bot.action('toggle_blur_frame', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
+  const db = await getDb();
+  const cfg = await getConfig(db);
+  cfg.blur_frame = cfg.blur_frame === false ? true : false;
+  await db.collection('settings').updateOne(
+    { _id: 'main_config' },
+    { $set: { blur_frame: cfg.blur_frame } }
+  );
+  await ctx.editMessageReplyMarkup(getEffectsKeyboard(cfg).reply_markup).catch(() => {});
+  await ctx.answerCbQuery(`Blur Frame: ${cfg.blur_frame ? 'ON' : 'OFF'}`).catch(() => {});
+});
+
+bot.action('toggle_watermark', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
+  const db = await getDb();
+  const cfg = await getConfig(db);
+  cfg.watermark_enabled = cfg.watermark_enabled === false ? true : false;
+  await db.collection('settings').updateOne(
+    { _id: 'main_config' },
+    { $set: { watermark_enabled: cfg.watermark_enabled } }
+  );
+  await ctx.editMessageReplyMarkup(getEffectsKeyboard(cfg).reply_markup).catch(() => {});
+  await ctx.answerCbQuery(`Watermark: ${cfg.watermark_enabled ? 'ON' : 'OFF'}`).catch(() => {});
 });
 
 // --- Visual Queue Manager ---
