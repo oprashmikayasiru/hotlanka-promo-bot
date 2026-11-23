@@ -1,8 +1,9 @@
 const { Telegraf, Markup } = require('telegraf');
 const { MongoClient, ObjectId } = require('mongodb');
 const sharp = require('sharp');
+const Jimp = require('jimp');
 
-// --- Environment Variables (No Hardcoded Secrets) ---
+// --- Environment Variables ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
@@ -37,8 +38,8 @@ async function getDb() {
   if (!clientPromise) {
     const client = new MongoClient(MONGODB_URI, {
       maxPoolSize: 10,
-      serverSelectionTimeoutMS: 10000,
-      connectTimeoutMS: 10000
+      serverSelectionTimeoutMS: 8000,
+      connectTimeoutMS: 8000
     });
     clientPromise = client.connect();
   }
@@ -71,7 +72,7 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Image Processing: Glassmorphism Blur Frame + Subtle SVG Watermark ---
+// --- Image Processing: Fast Sharp Blur Frame + Zero-Fontconfig Jimp Watermark ---
 async function processImageWithEffects(fileId, cfg) {
   const fileLink = await bot.telegram.getFileLink(fileId);
   const response = await fetch(fileLink.href);
@@ -82,65 +83,65 @@ async function processImageWithEffects(fileId, cfg) {
     return inputBuffer;
   }
 
-  const baseImg = sharp(inputBuffer);
-  const metadata = await baseImg.metadata();
+  // Normalize max width to 1080px for ultra-fast processing (< 1 second)
+  const normalizedBuffer = await sharp(inputBuffer)
+    .resize({ width: 1080, withoutEnlargement: true })
+    .jpeg({ quality: 92 })
+    .toBuffer();
+
+  const metadata = await sharp(normalizedBuffer).metadata();
   const origW = metadata.width || 720;
   const origH = metadata.height || 1280;
 
-  let foregroundBuffer = inputBuffer;
+  let foregroundBuffer = normalizedBuffer;
 
-  // 1. Apply Subtle Centered Watermark on Foreground Screenshot
+  // 1. Apply Subtle Centered Watermark using Jimp (Zero Fontconfig dependency)
   if (cfg.watermark_enabled) {
-    const wmText = (cfg.watermark_text || 'Hot Lanka')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
-    const fontSize = Math.max(24, Math.round(origW * 0.13));
+    const jimpImg = await Jimp.read(normalizedBuffer);
+    const font = origW >= 800 ? await Jimp.loadFont(Jimp.FONT_SANS_128_WHITE) : await Jimp.loadFont(Jimp.FONT_SANS_64_WHITE);
+    const wmText = cfg.watermark_text || 'Hot Lanka';
 
-    const watermarkSvg = Buffer.from(`
-      <svg width="${origW}" height="${origH}">
-        <style>
-          .wm {
-            fill: rgba(255, 255, 255, 0.28);
-            font-size: ${fontSize}px;
-            font-weight: 800;
-            font-family: sans-serif;
-            letter-spacing: 2px;
-          }
-        </style>
-        <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" class="wm">${wmText}</text>
-      </svg>
-    `);
+    const textLayer = new Jimp(origW, origH, 0x00000000);
+    textLayer.print(
+      font,
+      0,
+      0,
+      {
+        text: wmText,
+        alignmentX: Jimp.HORIZONTAL_ALIGN_CENTER,
+        alignmentY: Jimp.VERTICAL_ALIGN_MIDDLE
+      },
+      origW,
+      origH
+    );
 
-    foregroundBuffer = await sharp(inputBuffer)
-      .composite([{ input: watermarkSvg, gravity: 'center' }])
-      .toBuffer();
+    // Subtle 28% opacity
+    textLayer.opacity(0.28);
+    jimpImg.composite(textLayer, 0, 0);
+    foregroundBuffer = await jimpImg.getBufferAsync(Jimp.MIME_JPEG);
   }
 
   if (!cfg.blur_frame) {
     return foregroundBuffer;
   }
 
-  // 2. Apply Dynamic Glassmorphism Blurred Frame (Handles 9:16 and Extra Tall Images)
+  // 2. Apply Dynamic Glassmorphism Blurred Frame (Supports 9:16 & Extra Tall Images)
   const padX = Math.round(origW * 0.11);
   const padY = Math.round(origH * 0.08);
   const canvasW = origW + padX * 2;
   const canvasH = origH + padY * 2;
   const cornerRadius = Math.max(16, Math.round(origW * 0.035));
 
-  // Blurred darkened background
-  const blurredBg = await sharp(inputBuffer)
+  const blurredBg = await sharp(normalizedBuffer)
     .resize(canvasW, canvasH, { fit: 'cover' })
-    .blur(28)
+    .blur(26)
     .modulate({ brightness: 0.65 })
     .toBuffer();
 
-  // Rounded mask for crisp foreground card
-  const roundedMask = Buffer.from(`
-    <svg width="${origW}" height="${origH}">
-      <rect x="0" y="0" width="${origW}" height="${origH}" rx="${cornerRadius}" ry="${cornerRadius}" fill="#ffffff"/>
-    </svg>
-  `);
+  // Pure shape SVG (no text = zero Fontconfig usage)
+  const roundedMask = Buffer.from(
+    `<svg width="${origW}" height="${origH}"><rect x="0" y="0" width="${origW}" height="${origH}" rx="${cornerRadius}" ry="${cornerRadius}" fill="#ffffff"/></svg>`
+  );
 
   const roundedForeground = await sharp(foregroundBuffer)
     .resize(origW, origH)
@@ -148,13 +149,9 @@ async function processImageWithEffects(fileId, cfg) {
     .png()
     .toBuffer();
 
-  // Subtle glass border outline
-  const glassBorder = Buffer.from(`
-    <svg width="${canvasW}" height="${canvasH}">
-      <rect x="${padX}" y="${padY}" width="${origW}" height="${origH}" rx="${cornerRadius}" ry="${cornerRadius}"
-            fill="none" stroke="rgba(255, 255, 255, 0.25)" stroke-width="3"/>
-    </svg>
-  `);
+  const glassBorder = Buffer.from(
+    `<svg width="${canvasW}" height="${canvasH}"><rect x="${padX}" y="${padY}" width="${origW}" height="${origH}" rx="${cornerRadius}" ry="${cornerRadius}" fill="none" stroke="rgba(255,255,255,0.28)" stroke-width="3"/></svg>`
+  );
 
   return await sharp(blurredBg)
     .composite([
@@ -200,13 +197,24 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
 
       return { status: 'posted' };
     } catch (err) {
-      // Remove invalid/deleted image and skip to next automatically
-      await db.collection('queue').deleteOne({ _id: nextItem._id });
-      if (notifyAdmin) {
-        await bot.telegram.sendMessage(
-          ADMIN_ID,
-          '⚠️ Skipped 1 deleted/invalid photo. Moving to the next one.'
-        ).catch(() => {});
+      console.error('Publish Error:', err.message);
+      // Only delete from queue if Telegram file is permanently invalid/expired
+      if (err.message && (err.message.includes('FILE_UNAVAILABLE') || err.message.includes('wrong file_id') || err.message.includes('file is temporarily unavailable'))) {
+        await db.collection('queue').deleteOne({ _id: nextItem._id });
+        if (notifyAdmin) {
+          await bot.telegram.sendMessage(
+            ADMIN_ID,
+            '⚠️ Skipped 1 deleted/invalid photo. Moving to the next one.'
+          ).catch(() => {});
+        }
+      } else {
+        if (notifyAdmin) {
+          await bot.telegram.sendMessage(
+            ADMIN_ID,
+            `❌ Error posting: ${err.message}`
+          ).catch(() => {});
+        }
+        return { status: 'error' };
       }
     }
   }
@@ -227,7 +235,6 @@ async function runScheduledBatch(db, startTime) {
 
   try {
     while (toPostCount > 0) {
-      // Check elapsed time before starting next image (Safe 7.5s cutoff for 10s Vercel limit)
       if (Date.now() - startTime > 7500) {
         break;
       }
@@ -237,7 +244,9 @@ async function runScheduledBatch(db, startTime) {
         toPostCount = 0;
         break;
       }
-
+      if (res.status === 'error') {
+        break;
+      }
       if (res.status === 'posted') {
         toPostCount--;
         await db.collection('settings').updateOne(
@@ -322,7 +331,7 @@ function getEffectsKeyboard(cfg) {
   ]);
 }
 
-// --- Commands (Strictly Admin Only) ---
+// --- Commands ---
 bot.command('start', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
   await setupAdminCommands();
@@ -347,7 +356,7 @@ bot.command('cancel', async (ctx) => {
   await ctx.reply('❌ Action cancelled.');
 });
 
-// --- Photo Ingestion (Single & Bulk Albums) ---
+// --- Photo Ingestion ---
 const albumCounters = new Map();
 
 bot.on('photo', async (ctx) => {
@@ -374,7 +383,6 @@ bot.on('photo', async (ctx) => {
     return ctx.reply('✅ Added to queue.');
   }
 
-  // Group album replies cleanly
   const current = albumCounters.get(mediaGroupId) || { count: 0, timer: null };
   current.count += 1;
   if (current.timer) clearTimeout(current.timer);
@@ -420,14 +428,16 @@ bot.action('admin_toggle_status', async (ctx) => {
   await ctx.answerCbQuery(cfg.is_active ? 'Bot Activated' : 'Bot Paused');
 });
 
-// Manual Instant Post (Does NOT affect Daily Limit / Schedule)
 bot.action('admin_post_now', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery();
   await ctx.answerCbQuery('🚀 Publishing...');
   const db = await getDb();
   const cfg = await getConfig(db);
 
-  await publishNextQueueItem(db, cfg, true);
+  const res = await publishNextQueueItem(db, cfg, true);
+  if (res.status === 'empty') {
+    await ctx.reply('📭 Queue is empty! Send some screenshots first.');
+  }
 
   await ctx.editMessageText(await renderAdminText(db, cfg), {
     parse_mode: 'HTML',
@@ -527,7 +537,7 @@ bot.action(/del_time_(.+)/, async (ctx) => {
   await ctx.answerCbQuery(`Removed ${timeToRemove}`);
 });
 
-// Set Caption Prompt (Preserves Native Telegram Formatting)
+// Set Caption
 bot.action('admin_ui_caption', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery();
   const db = await getDb();
@@ -542,7 +552,7 @@ bot.action('admin_ui_caption', async (ctx) => {
   await ctx.answerCbQuery();
 });
 
-// Image Effects Menu (Separate Toggles)
+// Image Effects Menu
 bot.action('admin_ui_effects', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery();
   const db = await getDb();
@@ -583,7 +593,7 @@ bot.action('toggle_watermark', async (ctx) => {
   await ctx.answerCbQuery(`Watermark: ${cfg.watermark_enabled ? 'ON' : 'OFF'}`);
 });
 
-// --- Visual Queue Manager (Browse with Image, Move to Top, Delete) ---
+// --- Visual Queue Manager ---
 async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
   const items = await db.collection('queue').find({}).sort({ order: 1, message_id: 1, _id: 1 }).toArray();
 
@@ -678,7 +688,7 @@ bot.action('q_back_panel', async (ctx) => {
   await ctx.answerCbQuery();
 });
 
-// --- Text Input Handler (Times & Formatted Captions) ---
+// --- Text Input Handler ---
 bot.on('text', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
   const db = await getDb();
@@ -744,7 +754,6 @@ module.exports = async (req, res) => {
       const cfg = await getConfig(db);
 
       if (cfg.is_active) {
-        // Sri Lanka Time (UTC + 5:30)
         const now = new Date();
         const slDate = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
         const yyyy = slDate.getUTCFullYear();
@@ -763,7 +772,6 @@ module.exports = async (req, res) => {
           const schedTotalMins = tH * 60 + tM;
           const slotKey = `${dateStr}_${t}`;
 
-          // 20-minute window to absorb GitHub Actions cron jitter without missing or duplicating
           if (
             curTotalMins >= schedTotalMins &&
             curTotalMins <= schedTotalMins + 20 &&
@@ -787,7 +795,6 @@ module.exports = async (req, res) => {
           }
         }
 
-        // Execute batch within 7.5s safe budget; remainder rolls over automatically
         await runScheduledBatch(db, startTime);
       }
 
@@ -802,6 +809,7 @@ module.exports = async (req, res) => {
 
     return res.status(200).json({ ok: true });
   } catch (err) {
+    console.error('Handler Error:', err.message);
     return res.status(200).json({ ok: false });
   }
 };
