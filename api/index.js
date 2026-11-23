@@ -779,7 +779,7 @@ bot.action('cap_menu_video', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// Non-Destructive Post Preview (Zero Extra Chat Messages)
+// Non-Destructive Post Preview with Persistent Bottom Reply Keyboard "🗑 Close Preview"
 bot.action(/preview_post_(photo|video)/, async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const targetType = ctx.match[1];
@@ -794,9 +794,13 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
     [Markup.button.url('Contact Admin', CONTACT_ADMIN_URL)]
   ]);
 
-  const replyCloseKeyboard = Markup.keyboard([['🗑 Close Preview']])
-    .resize()
-    .oneTime();
+  const replyCloseKeyboard = {
+    reply_markup: {
+      keyboard: [[{ text: '🗑 Close Preview' }]],
+      resize_keyboard: true,
+      one_time_keyboard: false
+    }
+  };
 
   if (targetType === 'photo') {
     const samplePhoto = await db.collection('queue')
@@ -817,11 +821,16 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...captionPayload,
         ...postInlineKeyboard
       });
-      const sentHint = await ctx.reply('.', replyCloseKeyboard);
-      await bot.telegram.deleteMessage(ADMIN_ID, sentHint.message_id).catch(() => {});
+
+      // Replace Panel at bottom so Reply Keyboard stays active without any extra filler text message
+      if (cfg.panel_msg_id) {
+        await bot.telegram.deleteMessage(ADMIN_ID, cfg.panel_msg_id).catch(() => {});
+      }
+      const newPanel = await ctx.replyWithHTML(await renderAdminText(db, cfg), replyCloseKeyboard);
+
       await db.collection('settings').updateOne(
         { _id: 'main_config' },
-        { $set: { preview_msg_id: sentPreview.message_id } }
+        { $set: { preview_msg_id: sentPreview.message_id, panel_msg_id: newPanel.message_id, admin_state: null } }
       );
     } catch (err) {
       await ctx.answerCbQuery(`❌ Preview failed: ${err.message}`, { show_alert: true }).catch(() => {});
@@ -856,11 +865,15 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...postInlineKeyboard
       });
     }
-    const sentHint = await ctx.reply('.', replyCloseKeyboard);
-    await bot.telegram.deleteMessage(ADMIN_ID, sentHint.message_id).catch(() => {});
+
+    if (cfg.panel_msg_id) {
+      await bot.telegram.deleteMessage(ADMIN_ID, cfg.panel_msg_id).catch(() => {});
+    }
+    const newPanel = await ctx.replyWithHTML(await renderAdminText(db, cfg), replyCloseKeyboard);
+
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
-      { $set: { preview_msg_id: sentPreview.message_id } }
+      { $set: { preview_msg_id: sentPreview.message_id, panel_msg_id: newPanel.message_id, admin_state: null } }
     );
   } catch (err) {
     await ctx.answerCbQuery(`❌ Preview failed: ${err.message}`, { show_alert: true }).catch(() => {});
@@ -1054,18 +1067,28 @@ bot.on('text', async (ctx) => {
   const cfg = await getConfig(db);
   const rawText = ctx.message.text;
 
-  // Handle Reply Keyboard "Close Preview" button with zero leftover chat messages
+  // Handle Reply Keyboard "🗑 Close Preview" button
   if (rawText.trim() === '🗑 Close Preview') {
     await ctx.deleteMessage().catch(() => {});
     if (cfg.preview_msg_id) {
       await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_msg_id).catch(() => {});
     }
+    if (cfg.panel_msg_id) {
+      await bot.telegram.deleteMessage(ADMIN_ID, cfg.panel_msg_id).catch(() => {});
+    }
+
+    // Remove reply keyboard cleanly by restoring the Control Panel
+    const restoredPanel = await ctx.replyWithHTML(await renderAdminText(db, cfg), {
+      reply_markup: {
+        remove_keyboard: true,
+        inline_keyboard: getAdminKeyboard(cfg).reply_markup.inline_keyboard
+      }
+    });
+
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
-      { $set: { preview_msg_id: null } }
+      { $set: { preview_msg_id: null, panel_msg_id: restoredPanel.message_id, admin_state: null } }
     );
-    const removedMsg = await ctx.reply('.', Markup.removeKeyboard());
-    await bot.telegram.deleteMessage(ADMIN_ID, removedMsg.message_id).catch(() => {});
     return;
   }
 
