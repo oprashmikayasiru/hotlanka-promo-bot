@@ -76,6 +76,7 @@ async function getConfig(db) {
       watermark_text: 'Hot Lanka',
       pending_batch_count: 0,
       last_posted_slot: null,
+      last_posted_media_type: 'video', // Ensures Photo -> Video -> Photo alternation
       today_date: null,
       today_posted_count: 0,
       is_posting_locked: false,
@@ -88,8 +89,8 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Build Uniform 1080x1350 Cloudinary URL (No Border + Thin Blur Margin) ---
-async function buildTransformedMedia(fileId, cfg) {
+// --- Build Uniform 1080x1350 Cloudinary URL for Photos ---
+async function buildTransformedPhoto(fileId, cfg) {
   const useBlur = cfg.blur_frame !== false;
   const useWm = cfg.watermark_enabled !== false;
 
@@ -102,7 +103,6 @@ async function buildTransformedMedia(fileId, cfg) {
   const encodedUrl = encodeURIComponent(rawUrl);
   const wmText = encodeURIComponent(cfg.watermark_text || 'Hot Lanka');
 
-  // Case 1: Only Watermark ON (No Blur Frame)
   if (!useBlur && useWm) {
     return (
       `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/` +
@@ -113,7 +113,6 @@ async function buildTransformedMedia(fileId, cfg) {
     );
   }
 
-  // Case 2: Uniform 1080x1350 Canvas + Thin Frosted Blur + No Border Line
   const base64Url = Buffer.from(rawUrl)
     .toString('base64')
     .replace(/\+/g, '-')
@@ -137,6 +136,34 @@ async function buildTransformedMedia(fileId, cfg) {
   );
 }
 
+// --- Pick Next Item Following Photo -> Video -> Photo Alternation ---
+async function pickNextAlternatingItem(db, cfg) {
+  const lastType = cfg.last_posted_media_type || 'video';
+  const preferredType = lastType === 'photo' ? 'video' : 'photo';
+
+  const photoQuery = { $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }] };
+  const videoQuery = { media_type: 'video' };
+
+  const primaryQuery = preferredType === 'video' ? videoQuery : photoQuery;
+  const fallbackQuery = preferredType === 'video' ? photoQuery : videoQuery;
+
+  let item = await db.collection('queue')
+    .find(primaryQuery)
+    .sort({ order: 1, message_id: 1, _id: 1 })
+    .limit(1)
+    .next();
+
+  if (!item) {
+    item = await db.collection('queue')
+      .find(fallbackQuery)
+      .sort({ order: 1, message_id: 1, _id: 1 })
+      .limit(1)
+      .next();
+  }
+
+  return item;
+}
+
 // --- Publish Single Next Valid Item from Queue (Silent — No Chat Spam) ---
 async function publishNextQueueItem(db, cfg) {
   if (!TARGET_CHANNEL_ID) {
@@ -148,29 +175,40 @@ async function publishNextQueueItem(db, cfg) {
   ]);
 
   while (true) {
-    const nextItem = await db.collection('queue')
-      .find({})
-      .sort({ order: 1, message_id: 1, _id: 1 })
-      .limit(1)
-      .next();
+    const nextItem = await pickNextAlternatingItem(db, cfg);
 
     if (!nextItem) {
       return { status: 'empty' };
     }
 
-    try {
-      const mediaSource = await buildTransformedMedia(nextItem.file_id, cfg);
+    const itemType = nextItem.media_type === 'video' ? 'video' : 'photo';
 
+    try {
       const postOptions = {
         caption: cfg.caption_text || '',
         caption_entities: cfg.caption_entities && cfg.caption_entities.length > 0 ? cfg.caption_entities : undefined,
         ...fixedButton
       };
 
-      await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, mediaSource, postOptions);
+      if (itemType === 'video') {
+        await bot.telegram.sendVideo(TARGET_CHANNEL_ID, nextItem.file_id, {
+          ...postOptions,
+          supports_streaming: true
+        });
+      } else {
+        const mediaSource = await buildTransformedPhoto(nextItem.file_id, cfg);
+        await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, mediaSource, postOptions);
+      }
+
       await db.collection('queue').deleteOne({ _id: nextItem._id });
 
-      return { status: 'posted' };
+      cfg.last_posted_media_type = itemType;
+      await db.collection('settings').updateOne(
+        { _id: 'main_config' },
+        { $set: { last_posted_media_type: itemType } }
+      );
+
+      return { status: 'posted', mediaType: itemType };
     } catch (err) {
       if (
         err.message &&
@@ -190,7 +228,6 @@ async function runScheduledBatch(db, startTime) {
   const cfg = await getConfig(db);
   if (!cfg.is_active) return;
 
-  // Auto-release stale lock if older than 90 seconds (prevents permanent lock on Vercel timeout)
   const lockAge = Date.now() - (cfg.lock_timestamp || 0);
   if (cfg.is_posting_locked && lockAge < 90000) {
     return;
@@ -257,7 +294,6 @@ async function runScheduledBatch(db, startTime) {
       { $set: { pending_batch_count: toPostCount, is_posting_locked: false, lock_timestamp: 0 } }
     );
 
-    // Silently update existing Control Panel queue count without sending new messages
     if (postedAny && cfg.panel_msg_id && !cfg.admin_state) {
       const updatedCfg = await getConfig(db);
       await bot.telegram.editMessageText(
@@ -273,17 +309,26 @@ async function runScheduledBatch(db, startTime) {
 
 // --- Admin UI Helpers ---
 async function renderAdminText(db, cfg) {
-  const queueCount = await db.collection('queue').countDocuments({});
+  const photoCount = await db.collection('queue').countDocuments({
+    $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }]
+  });
+  const videoCount = await db.collection('queue').countDocuments({ media_type: 'video' });
+  const totalCount = photoCount + videoCount;
+
   const timesStr = (cfg.schedule_times || []).sort().join(', ') || 'None';
   const frameStatus = cfg.blur_frame !== false ? '🟢' : '🔴';
   const wmStatus = cfg.watermark_enabled !== false ? '🟢' : '🔴';
+
+  const queueDetail = videoCount > 0
+    ? `${totalCount} Pending (🖼 ${photoCount} | 🎬 ${videoCount})`
+    : `${totalCount} Pending`;
 
   return (
     `⚙️ <b>VIP PROMO CONTROL PANEL</b>\n\n` +
     `📊 <b>Status:</b> ${cfg.is_active ? '🟢 ACTIVE' : '🔴 PAUSED'}\n` +
     `📦 <b>Daily Limit:</b> ${cfg.daily_limit} Posts / Day\n` +
     `⏰ <b>Schedule:</b> ${timesStr}\n` +
-    `🖼 <b>Queue:</b> ${queueCount} Pending\n` +
+    `🖼 <b>Queue:</b> ${queueDetail}\n` +
     `🎨 <b>Effects:</b> Blur Frame ${frameStatus} | Watermark ${wmStatus}`
   );
 }
@@ -394,16 +439,11 @@ bot.command('cancel', async (ctx) => {
   }
 });
 
-// --- Photo Ingestion (Notifications Stay in Chat) ---
+// --- Media Ingestion (Photos & Videos) ---
 const albumCounters = new Map();
 
-bot.on('photo', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return;
+async function handleMediaIngestion(ctx, fileId, mediaType) {
   const db = await getDb();
-
-  const photos = ctx.message.photo;
-  const highestResPhoto = photos[photos.length - 1];
-  const fileId = highestResPhoto.file_id;
   const msgId = ctx.message.message_id;
   const mediaGroupId = ctx.message.media_group_id;
 
@@ -412,13 +452,15 @@ bot.on('photo', async (ctx) => {
 
   await db.collection('queue').insertOne({
     file_id: fileId,
+    media_type: mediaType,
     message_id: msgId,
     order: nextOrder,
     added_at: new Date()
   });
 
   if (!mediaGroupId) {
-    await ctx.reply('✅ Added to queue.');
+    const label = mediaType === 'video' ? '🎬 Video added to queue.' : '✅ Added to queue.';
+    await ctx.reply(label);
     const cfg = await getConfig(db);
     if (cfg.panel_msg_id && !cfg.admin_state) {
       await bot.telegram.editMessageText(
@@ -439,7 +481,7 @@ bot.on('photo', async (ctx) => {
   current.timer = setTimeout(async () => {
     const total = albumCounters.get(mediaGroupId)?.count || 1;
     albumCounters.delete(mediaGroupId);
-    await ctx.reply(`✅ ${total} photos added to queue.`).catch(() => {});
+    await ctx.reply(`✅ ${total} items added to queue.`).catch(() => {});
     const cfg = await getConfig(db);
     if (cfg.panel_msg_id && !cfg.admin_state) {
       await bot.telegram.editMessageText(
@@ -453,6 +495,18 @@ bot.on('photo', async (ctx) => {
   }, 1200);
 
   albumCounters.set(mediaGroupId, current);
+}
+
+bot.on('photo', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return;
+  const photos = ctx.message.photo;
+  const highestResPhoto = photos[photos.length - 1];
+  await handleMediaIngestion(ctx, highestResPhoto.file_id, 'photo');
+});
+
+bot.on('video', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return;
+  await handleMediaIngestion(ctx, ctx.message.video.file_id, 'video');
 });
 
 // --- Admin Callback Actions ---
@@ -501,9 +555,10 @@ bot.action('admin_post_now', async (ctx) => {
   const res = await publishNextQueueItem(db, cfg);
 
   if (res.status === 'posted') {
-    await ctx.answerCbQuery('🚀 Posted to Hot Lanka channel!', { show_alert: true }).catch(() => {});
+    const typeLabel = res.mediaType === 'video' ? '🎬 Video' : '🖼 Photo';
+    await ctx.answerCbQuery(`🚀 ${typeLabel} posted to Hot Lanka channel!`, { show_alert: true }).catch(() => {});
   } else if (res.status === 'empty') {
-    await ctx.answerCbQuery('📭 Queue is empty! Send some photos first.', { show_alert: true }).catch(() => {});
+    await ctx.answerCbQuery('📭 Queue is empty! Send some photos or videos first.', { show_alert: true }).catch(() => {});
   } else {
     await ctx.answerCbQuery(`❌ Failed: ${res.reason || 'Unknown error'}`, { show_alert: true }).catch(() => {});
   }
@@ -670,7 +725,7 @@ bot.action('toggle_watermark', async (ctx) => {
   await ctx.answerCbQuery(`Watermark: ${cfg.watermark_enabled ? '🟢 ON' : '🔴 OFF'}`).catch(() => {});
 });
 
-// --- Visual Queue Manager ---
+// --- Visual Queue Manager (Supports Both Photos & Videos) ---
 async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
   const items = await db.collection('queue').find({}).sort({ order: 1, message_id: 1, _id: 1 }).toArray();
 
@@ -694,10 +749,12 @@ async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
 
   const safeIndex = Math.max(0, Math.min(index, items.length - 1));
   const item = items[safeIndex];
+  const isVideo = item.media_type === 'video';
   const prevIdx = safeIndex > 0 ? safeIndex - 1 : items.length - 1;
   const nextIdx = safeIndex < items.length - 1 ? safeIndex + 1 : 0;
 
-  const caption = `🖼 <b>Queue Item #${safeIndex + 1} of ${items.length}</b>`;
+  const badge = isVideo ? '🎬 Video' : '🖼 Photo';
+  const caption = `${badge} — <b>Queue Item #${safeIndex + 1} of ${items.length}</b>`;
   const keyboard = Markup.inlineKeyboard([
     [
       Markup.button.callback('⬅️ Prev', `admin_queue_${prevIdx}`),
@@ -712,15 +769,23 @@ async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
   ]);
 
   if (isNewMessage) {
-    await ctx.replyWithPhoto(item.file_id, {
-      caption,
-      parse_mode: 'HTML',
-      ...keyboard
-    });
+    if (isVideo) {
+      await ctx.replyWithVideo(item.file_id, {
+        caption,
+        parse_mode: 'HTML',
+        ...keyboard
+      });
+    } else {
+      await ctx.replyWithPhoto(item.file_id, {
+        caption,
+        parse_mode: 'HTML',
+        ...keyboard
+      });
+    }
   } else {
     await ctx.editMessageMedia(
       {
-        type: 'photo',
+        type: isVideo ? 'video' : 'photo',
         media: item.file_id,
         caption,
         parse_mode: 'HTML'
