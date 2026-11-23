@@ -85,7 +85,8 @@ async function getConfig(db) {
       lock_timestamp: 0,
       admin_state: null,
       panel_msg_id: null,
-      preview_msg_id: null
+      preview_msg_id: null,
+      preview_hint_id: null
     };
     await db.collection('settings').insertOne(cfg);
   }
@@ -779,7 +780,7 @@ bot.action('cap_menu_video', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// Non-Destructive Post Preview with Persistent Bottom Reply Keyboard "🗑 Close Preview"
+// Non-Destructive Post Preview (Invisible Zero-Width Anchor Keeps Reply Keyboard Active Without Visible Text)
 bot.action(/preview_post_(photo|video)/, async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const targetType = ctx.match[1];
@@ -789,18 +790,17 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
   if (cfg.preview_msg_id) {
     await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_msg_id).catch(() => {});
   }
+  if (cfg.preview_hint_id) {
+    await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_hint_id).catch(() => {});
+  }
 
   const postInlineKeyboard = Markup.inlineKeyboard([
     [Markup.button.url('Contact Admin', CONTACT_ADMIN_URL)]
   ]);
 
-  const replyCloseKeyboard = {
-    reply_markup: {
-      keyboard: [[{ text: '🗑 Close Preview' }]],
-      resize_keyboard: true,
-      one_time_keyboard: false
-    }
-  };
+  const replyCloseKeyboard = Markup.keyboard([['🗑 Close Preview']])
+    .resize()
+    .oneTime();
 
   if (targetType === 'photo') {
     const samplePhoto = await db.collection('queue')
@@ -821,16 +821,11 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...captionPayload,
         ...postInlineKeyboard
       });
-
-      // Replace Panel at bottom so Reply Keyboard stays active without any extra filler text message
-      if (cfg.panel_msg_id) {
-        await bot.telegram.deleteMessage(ADMIN_ID, cfg.panel_msg_id).catch(() => {});
-      }
-      const newPanel = await ctx.replyWithHTML(await renderAdminText(db, cfg), replyCloseKeyboard);
-
+      // Zero-width space keeps reply keyboard visible with zero visible text message
+      const sentAnchor = await ctx.reply('\u200B', replyCloseKeyboard);
       await db.collection('settings').updateOne(
         { _id: 'main_config' },
-        { $set: { preview_msg_id: sentPreview.message_id, panel_msg_id: newPanel.message_id, admin_state: null } }
+        { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentAnchor.message_id } }
       );
     } catch (err) {
       await ctx.answerCbQuery(`❌ Preview failed: ${err.message}`, { show_alert: true }).catch(() => {});
@@ -865,15 +860,10 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...postInlineKeyboard
       });
     }
-
-    if (cfg.panel_msg_id) {
-      await bot.telegram.deleteMessage(ADMIN_ID, cfg.panel_msg_id).catch(() => {});
-    }
-    const newPanel = await ctx.replyWithHTML(await renderAdminText(db, cfg), replyCloseKeyboard);
-
+    const sentAnchor = await ctx.reply('\u200B', replyCloseKeyboard);
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
-      { $set: { preview_msg_id: sentPreview.message_id, panel_msg_id: newPanel.message_id, admin_state: null } }
+      { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentAnchor.message_id } }
     );
   } catch (err) {
     await ctx.answerCbQuery(`❌ Preview failed: ${err.message}`, { show_alert: true }).catch(() => {});
@@ -1067,28 +1057,21 @@ bot.on('text', async (ctx) => {
   const cfg = await getConfig(db);
   const rawText = ctx.message.text;
 
-  // Handle Reply Keyboard "🗑 Close Preview" button
+  // Handle Reply Keyboard "Close Preview" button cleanly
   if (rawText.trim() === '🗑 Close Preview') {
     await ctx.deleteMessage().catch(() => {});
     if (cfg.preview_msg_id) {
       await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_msg_id).catch(() => {});
     }
-    if (cfg.panel_msg_id) {
-      await bot.telegram.deleteMessage(ADMIN_ID, cfg.panel_msg_id).catch(() => {});
+    if (cfg.preview_hint_id) {
+      await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_hint_id).catch(() => {});
     }
-
-    // Remove reply keyboard cleanly by restoring the Control Panel
-    const restoredPanel = await ctx.replyWithHTML(await renderAdminText(db, cfg), {
-      reply_markup: {
-        remove_keyboard: true,
-        inline_keyboard: getAdminKeyboard(cfg).reply_markup.inline_keyboard
-      }
-    });
-
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
-      { $set: { preview_msg_id: null, panel_msg_id: restoredPanel.message_id, admin_state: null } }
+      { $set: { preview_msg_id: null, preview_hint_id: null } }
     );
+    const removedMsg = await ctx.reply('\u200B', Markup.removeKeyboard());
+    await bot.telegram.deleteMessage(ADMIN_ID, removedMsg.message_id).catch(() => {});
     return;
   }
 
