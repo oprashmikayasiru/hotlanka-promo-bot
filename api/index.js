@@ -71,7 +71,7 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Build Dynamic Aspect-Ratio Cloudinary URL ---
+// --- Build Uniform 1080x1350 Cloudinary URL (No Border + Thin Blur Margin) ---
 async function buildTransformedMedia(fileId, cfg) {
   const useBlur = cfg.blur_frame !== false;
   const useWm = cfg.watermark_enabled !== false;
@@ -90,13 +90,13 @@ async function buildTransformedMedia(fileId, cfg) {
     return (
       `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/` +
       `c_limit,w_1280,h_1280/` +
-      `l_text:Arial_52_bold:${wmText},co_white,o_35,g_center/` +
+      `l_text:Arial_54_bold:${wmText},co_white,o_35,g_center/` +
       `f_jpg,q_90/` +
       `${encodedUrl}`
     );
   }
 
-  // Case 2: Dynamic Blur Frame ON (Adapts proportionally to 1:1, 16:9, 9:16, 4:5)
+  // Case 2: Uniform 1080x1350 Canvas + Thin Frosted Blur + No Border Line
   const base64Url = Buffer.from(rawUrl)
     .toString('base64')
     .replace(/\+/g, '-')
@@ -104,18 +104,16 @@ async function buildTransformedMedia(fileId, cfg) {
     .replace(/=+$/, '');
 
   const wmLayer = useWm
-    ? `/l_text:Arial_52_bold:${wmText},co_white,o_35,g_center`
+    ? `/l_text:Arial_58_bold:${wmText},co_white,o_35,g_center`
     : '';
 
-  // Base keeps exact original aspect ratio (max 1200px) + frosted blur;
-  // Foreground overlay scales proportionally to 86% (fl_relative) so main photo always stays large & focused!
   return (
     `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/` +
-    `c_limit,w_1200,h_1200/` +
+    `w_1080,h_1350,c_fill/` +
     `e_pixelate:16/` +
     `e_blur:2000/` +
     `e_brightness:-35/` +
-    `l_fetch:${base64Url},c_fit,w_0.86,h_0.86,fl_relative,r_22,bo_3px_solid_rgb:ffffff60,g_center` +
+    `l_fetch:${base64Url},w_1005,h_1265,c_fit,r_22,g_center` +
     `${wmLayer}/` +
     `f_jpg,q_90/` +
     `${encodedUrl}`
