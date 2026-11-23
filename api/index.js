@@ -1,6 +1,5 @@
 const { Telegraf, Markup } = require('telegraf');
 const { MongoClient, ObjectId } = require('mongodb');
-const Jimp = require('jimp');
 
 // --- Environment Variables ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -58,9 +57,6 @@ async function getConfig(db) {
       schedule_times: ['09:00', '14:30', '20:00'],
       caption_text: '🔥 NEW UPDATE ADDED TO VIP!\n\n✅ Full Album & Videos available now.\n💰 VIP Access: Rs. 500/= Only',
       caption_entities: [],
-      blur_frame: true,
-      watermark_enabled: true,
-      watermark_text: 'Hot Lanka',
       pending_batch_count: 0,
       last_posted_slot: null,
       is_posting_locked: false,
@@ -71,102 +67,7 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Zero-External-Font Bitmap Renderer for "HOT LANKA" ---
-const BITMAP_CHARS = {
-  H: ['1001', '1001', '1111', '1001', '1001'],
-  O: ['1111', '1001', '1001', '1001', '1111'],
-  T: ['11111', '00100', '00100', '00100', '00100'],
-  L: ['1000', '1000', '1000', '1000', '1111'],
-  A: ['0110', '1001', '1111', '1001', '1001'],
-  N: ['1001', '1101', '1011', '1001', '1001'],
-  K: ['1001', '1010', '1100', '1010', '1001'],
-  ' ': ['00', '00', '00', '00', '00']
-};
-
-function createJimpWatermark(targetWidth) {
-  const text = 'HOT LANKA';
-  const grid = ['', '', '', '', ''];
-  for (const ch of text) {
-    const glyph = BITMAP_CHARS[ch] || BITMAP_CHARS[' '];
-    for (let r = 0; r < 5; r++) {
-      grid[r] += glyph[r] + '0';
-    }
-  }
-
-  const cols = grid[0].length;
-  const rows = 5;
-  const tiny = new Jimp(cols, rows, 0x00000000);
-
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (grid[r][c] === '1') {
-        tiny.setPixelColor(0xffffff58, c, r); // Subtle white (~35% alpha)
-      }
-    }
-  }
-
-  const outW = Math.max(120, Math.round(targetWidth * 0.65));
-  const outH = Math.max(20, Math.round((outW / cols) * rows));
-  tiny.resize(outW, outH, Jimp.RESIZE_NEAREST_NEIGHBOR);
-  return tiny;
-}
-
-// --- Pure JavaScript Image Processing (100% Vercel Compatible, Zero Native Crashes) ---
-async function processImageWithEffects(fileId, cfg) {
-  const fileLink = await bot.telegram.getFileLink(fileId);
-  const response = await fetch(fileLink.href);
-  if (!response.ok) throw new Error('FILE_UNAVAILABLE');
-  const inputBuffer = Buffer.from(await response.arrayBuffer());
-
-  if (!cfg.blur_frame && !cfg.watermark_enabled) {
-    return inputBuffer;
-  }
-
-  const fgImg = await Jimp.read(inputBuffer);
-  if (fgImg.bitmap.width > 760) {
-    fgImg.resize(760, Jimp.AUTO);
-  }
-
-  const origW = fgImg.bitmap.width;
-  const origH = fgImg.bitmap.height;
-
-  // 1. Apply Subtle Centered Watermark
-  if (cfg.watermark_enabled) {
-    const wmImg = createJimpWatermark(origW);
-    const wmX = Math.round((origW - wmImg.bitmap.width) / 2);
-    const wmY = Math.round((origH - wmImg.bitmap.height) / 2);
-    fgImg.composite(wmImg, wmX, wmY);
-  }
-
-  if (!cfg.blur_frame) {
-    fgImg.quality(86);
-    return await fgImg.getBufferAsync(Jimp.MIME_JPEG);
-  }
-
-  // 2. Apply Fast Glassmorphism Blurred Frame
-  const padX = Math.round(origW * 0.1);
-  const padY = Math.round(origH * 0.07);
-  const canvasW = origW + padX * 2;
-  const canvasH = origH + padY * 2;
-
-  // Fast downscale -> blur -> upscale for smooth background
-  const bgImg = fgImg
-    .clone()
-    .resize(120, Math.max(120, Math.round((120 * canvasH) / canvasW)))
-    .blur(8)
-    .brightness(-0.32)
-    .resize(canvasW, canvasH);
-
-  // Subtle white glass border around foreground screenshot
-  const borderBox = new Jimp(origW + 6, origH + 6, 0xffffff55);
-  bgImg.composite(borderBox, padX - 3, padY - 3);
-  bgImg.composite(fgImg, padX, padY);
-
-  bgImg.quality(85);
-  return await bgImg.getBufferAsync(Jimp.MIME_JPEG);
-}
-
-// --- Publish Single Next Valid Item from Queue ---
+// --- Instant Direct Publishing via file_id ---
 async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
   if (!TARGET_CHANNEL_ID) {
     if (notifyAdmin) {
@@ -191,15 +92,13 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
     }
 
     try {
-      const finalImageBuffer = await processImageWithEffects(nextItem.file_id, cfg);
-
       const postOptions = {
         caption: cfg.caption_text || '',
         caption_entities: cfg.caption_entities && cfg.caption_entities.length > 0 ? cfg.caption_entities : undefined,
         ...fixedButton
       };
 
-      await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, { source: finalImageBuffer }, postOptions);
+      await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, nextItem.file_id, postOptions);
       await db.collection('queue').deleteOne({ _id: nextItem._id });
 
       if (notifyAdmin) {
@@ -208,11 +107,9 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
 
       return { status: 'posted' };
     } catch (err) {
-      console.error('Publish Error:', err.message);
       if (
         err.message &&
-        (err.message.includes('FILE_UNAVAILABLE') ||
-          err.message.includes('wrong file_id') ||
+        (err.message.includes('wrong file_id') ||
           err.message.includes('file is temporarily unavailable'))
       ) {
         await db.collection('queue').deleteOne({ _id: nextItem._id });
@@ -235,7 +132,7 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = true) {
   }
 }
 
-// --- Time-Budgeted Batch Execution (7.5s Cutoff + Auto Roll-over) ---
+// --- Batch Execution ---
 async function runScheduledBatch(db, startTime) {
   const cfg = await getConfig(db);
   if (!cfg.is_active || cfg.is_posting_locked) return;
@@ -282,16 +179,13 @@ async function runScheduledBatch(db, startTime) {
 async function renderAdminText(db, cfg) {
   const queueCount = await db.collection('queue').countDocuments({});
   const timesStr = (cfg.schedule_times || []).sort().join(', ') || 'None';
-  const frameStatus = cfg.blur_frame ? '🟢' : '🔴';
-  const wmStatus = cfg.watermark_enabled ? '🟢' : '🔴';
 
   return (
     `⚙️ <b>VIP PROMO CONTROL PANEL</b>\n\n` +
     `📊 <b>Status:</b> ${cfg.is_active ? '🟢 ACTIVE' : '🔴 PAUSED'}\n` +
     `📦 <b>Daily Limit:</b> ${cfg.daily_limit} Posts / Day\n` +
     `⏰ <b>Schedule:</b> ${timesStr}\n` +
-    `🖼 <b>Queue:</b> ${queueCount} Pending\n` +
-    `🎨 <b>Effects:</b> Blur Frame ${frameStatus} | Watermark ${wmStatus}`
+    `🖼 <b>Queue:</b> ${queueCount} Pending`
   );
 }
 
@@ -307,7 +201,6 @@ function getAdminKeyboard(cfg) {
       Markup.button.callback('📝 Set Caption', 'admin_ui_caption'),
       Markup.button.callback('🖼 Manage Queue', 'admin_queue_0')
     ],
-    [Markup.button.callback('🎨 Image Effects', 'admin_ui_effects')],
     [
       Markup.button.callback(activeLabel, 'admin_toggle_status'),
       Markup.button.callback('🔄 Refresh', 'admin_refresh')
@@ -326,24 +219,6 @@ function getTimesKeyboard(times) {
   buttons.push([Markup.button.callback('➕ Add Custom Time', 'admin_ui_add_time')]);
   buttons.push([Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]);
   return Markup.inlineKeyboard(buttons);
-}
-
-function getEffectsKeyboard(cfg) {
-  return Markup.inlineKeyboard([
-    [
-      Markup.button.callback(
-        `🖼 Blur Frame: ${cfg.blur_frame ? '🟢 ON' : '🔴 OFF'}`,
-        'toggle_blur_frame'
-      )
-    ],
-    [
-      Markup.button.callback(
-        `💧 Watermark: ${cfg.watermark_enabled ? '🟢 ON' : '🔴 OFF'}`,
-        'toggle_watermark'
-      )
-    ],
-    [Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]
-  ]);
 }
 
 // --- Commands ---
@@ -445,42 +320,16 @@ bot.action('admin_toggle_status', async (ctx) => {
 
 bot.action('admin_post_now', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
-  await ctx.answerCbQuery('⏳ Processing...').catch(() => {});
-  const statusMsg = await ctx.reply('⏳ <b>Processing & posting to channel...</b>', {
-    parse_mode: 'HTML'
-  }).catch(() => null);
+  await ctx.answerCbQuery('🚀 Publishing...').catch(() => {});
 
   const db = await getDb();
   const cfg = await getConfig(db);
+  const res = await publishNextQueueItem(db, cfg, true);
 
-  const res = await publishNextQueueItem(db, cfg, false);
-
-  if (statusMsg) {
-    if (res.status === 'posted') {
-      await bot.telegram.editMessageText(
-        ADMIN_ID,
-        statusMsg.message_id,
-        undefined,
-        '🚀 <b>Posted to Hot Lanka channel!</b>',
-        { parse_mode: 'HTML' }
-      ).catch(() => {});
-    } else if (res.status === 'empty') {
-      await bot.telegram.editMessageText(
-        ADMIN_ID,
-        statusMsg.message_id,
-        undefined,
-        '📭 <b>Queue is empty!</b> Send some screenshots first.',
-        { parse_mode: 'HTML' }
-      ).catch(() => {});
-    } else {
-      await bot.telegram.editMessageText(
-        ADMIN_ID,
-        statusMsg.message_id,
-        undefined,
-        `❌ <b>Error:</b> ${res.reason || 'Unknown error'}`,
-        { parse_mode: 'HTML' }
-      ).catch(() => {});
-    }
+  if (res.status === 'empty') {
+    await ctx.reply('📭 <b>Queue is empty!</b> Send some screenshots first.', {
+      parse_mode: 'HTML'
+    }).catch(() => {});
   }
 
   await ctx.editMessageText(await renderAdminText(db, cfg), {
@@ -594,47 +443,6 @@ bot.action('admin_ui_caption', async (ctx) => {
     { parse_mode: 'HTML' }
   );
   await ctx.answerCbQuery().catch(() => {});
-});
-
-// Image Effects Menu
-bot.action('admin_ui_effects', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
-  const db = await getDb();
-  const cfg = await getConfig(db);
-  await ctx.editMessageText(
-    '🎨 <b>IMAGE EFFECTS SETTINGS</b>\n\nToggle effects individually below:',
-    {
-      parse_mode: 'HTML',
-      ...getEffectsKeyboard(cfg)
-    }
-  ).catch(() => {});
-  await ctx.answerCbQuery().catch(() => {});
-});
-
-bot.action('toggle_blur_frame', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
-  const db = await getDb();
-  const cfg = await getConfig(db);
-  cfg.blur_frame = !cfg.blur_frame;
-  await db.collection('settings').updateOne(
-    { _id: 'main_config' },
-    { $set: { blur_frame: cfg.blur_frame } }
-  );
-  await ctx.editMessageReplyMarkup(getEffectsKeyboard(cfg).reply_markup).catch(() => {});
-  await ctx.answerCbQuery(`Blur Frame: ${cfg.blur_frame ? 'ON' : 'OFF'}`).catch(() => {});
-});
-
-bot.action('toggle_watermark', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
-  const db = await getDb();
-  const cfg = await getConfig(db);
-  cfg.watermark_enabled = !cfg.watermark_enabled;
-  await db.collection('settings').updateOne(
-    { _id: 'main_config' },
-    { $set: { watermark_enabled: cfg.watermark_enabled } }
-  );
-  await ctx.editMessageReplyMarkup(getEffectsKeyboard(cfg).reply_markup).catch(() => {});
-  await ctx.answerCbQuery(`Watermark: ${cfg.watermark_enabled ? 'ON' : 'OFF'}`).catch(() => {});
 });
 
 // --- Visual Queue Manager ---
@@ -853,7 +661,6 @@ module.exports = async (req, res) => {
 
     return res.status(200).json({ ok: true });
   } catch (err) {
-    console.error('Handler Error:', err.message);
     return res.status(200).json({ ok: false });
   }
 };
