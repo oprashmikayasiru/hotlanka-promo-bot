@@ -1,0 +1,14 @@
+name: VIP Promo Auto-Poster Cron
+
+on:
+  schedule:
+    - cron: '*/10 * * * *' # Runs every 10 minutes
+  workflow_dispatch:
+
+jobs:
+  trigger-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Vercel Endpoint
+        run: |
+          curl -s -f "${{ secrets.VERCEL_APP_URL }}" || exit 1
