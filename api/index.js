@@ -71,50 +71,187 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Pure Vector SVG Path Generator for "Hot Lanka" (Zero Font / Zero Fontconfig) ---
-function createHotLankaWatermarkSvg(width, height) {
-  const paths = [
-    // H
-    'M 20 20 L 20 100 M 20 60 L 65 60 M 65 20 L 65 100',
-    // o
-    'M 115 45 A 25 27.5 0 1 0 115 100 A 25 27.5 0 1 0 115 45',
-    // t
-    'M 175 25 L 175 90 Q 175 100 188 100 L 198 100 M 160 48 L 195 48',
-    // L
-    'M 265 20 L 265 100 L 315 100',
-    // a
-    'M 378 65 A 22 22 0 1 0 378 82 M 378 46 L 378 100',
-    // n
-    'M 412 46 L 412 100 M 412 62 Q 412 46 432 46 Q 452 46 452 65 L 452 100',
-    // k
-    'M 486 20 L 486 100 M 528 46 L 486 76 M 502 65 L 532 100',
-    // a
-    'M 600 65 A 22 22 0 1 0 600 82 M 600 46 L 600 100'
-  ];
-
-  const targetW = Math.round(width * 0.72);
-  const scale = targetW / 640;
-  const targetH = Math.round(120 * scale);
-  const offsetX = Math.round((width - targetW) / 2);
-  const offsetY = Math.round((height - targetH) / 2);
-
-  const pathElements = paths
-    .map(
-      (d) =>
-        `<path d="${d}" fill="none" stroke="rgba(255,255,255,0.32)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>`
-    )
-    .join('');
-
-  return Buffer.from(`
-    <svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-      <g transform="translate(${offsetX}, ${offsetY}) scale(${scale})">
-        ${pathElements}
-      </g>
-    </svg>
-  `);
+// --- Pure Raw RGBA Pixel Helpers (Zero SVG / Zero librsvg) ---
+function createRoundedMaskRaw(w, h, r) {
+  const buf = Buffer.alloc(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let alpha = 255;
+      let dx = 0;
+      let dy = 0;
+      if (x < r && y < r) {
+        dx = r - x;
+        dy = r - y;
+      } else if (x >= w - r && y < r) {
+        dx = x - (w - r - 1);
+        dy = r - y;
+      } else if (x < r && y >= h - r) {
+        dx = r - x;
+        dy = y - (h - r - 1);
+      } else if (x >= w - r && y >= h - r) {
+        dx = x - (w - r - 1);
+        dy = y - (h - r - 1);
+      }
+      if (dx > 0 || dy > 0) {
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > r + 0.5) alpha = 0;
+        else if (dist > r - 0.5) alpha = Math.round((r + 0.5 - dist) * 255);
+      }
+      const idx = (y * w + x) * 4;
+      buf[idx] = 255;
+      buf[idx + 1] = 255;
+      buf[idx + 2] = 255;
+      buf[idx + 3] = alpha;
+    }
+  }
+  return buf;
 }
 
-// --- Ultra-Fast Image Processing (< 0.5s on Vercel Free Tier) ---
+function createGlassBorderRaw(canvasW, canvasH, padX, padY, innerW, innerH, r) {
+  const buf = Buffer.alloc(canvasW * canvasH * 4);
+  const stroke = 2.5;
+  for (let y = padY; y < padY + innerH; y++) {
+    const iy = y - padY;
+    for (let x = padX; x < padX + innerW; x++) {
+      const ix = x - padX;
+      let distFromEdge = Math.min(ix, innerW - 1 - ix, iy, innerH - 1 - iy);
+
+      let dx = 0;
+      let dy = 0;
+      if (ix < r && iy < r) {
+        dx = r - ix;
+        dy = r - iy;
+      } else if (ix >= innerW - r && iy < r) {
+        dx = ix - (innerW - r - 1);
+        dy = r - iy;
+      } else if (ix < r && iy >= innerH - r) {
+        dx = r - ix;
+        dy = iy - (innerH - r - 1);
+      } else if (ix >= innerW - r && iy >= innerH - r) {
+        dx = ix - (innerW - r - 1);
+        dy = iy - (innerH - r - 1);
+      }
+      if (dx > 0 || dy > 0) {
+        distFromEdge = r - Math.sqrt(dx * dx + dy * dy);
+      }
+
+      if (distFromEdge >= 0 && distFromEdge <= stroke) {
+        const idx = (y * canvasW + x) * 4;
+        buf[idx] = 255;
+        buf[idx + 1] = 255;
+        buf[idx + 2] = 255;
+        buf[idx + 3] = 75;
+      }
+    }
+  }
+  return buf;
+}
+
+function drawCapsule(buf, w, h, x1, y1, x2, y2, radius, alpha) {
+  const minX = Math.max(0, Math.floor(Math.min(x1, x2) - radius - 2));
+  const maxX = Math.min(w - 1, Math.ceil(Math.max(x1, x2) + radius + 2));
+  const minY = Math.max(0, Math.floor(Math.min(y1, y2) - radius - 2));
+  const maxY = Math.min(h - 1, Math.ceil(Math.max(y1, y2) + radius + 2));
+  const vx = x2 - x1;
+  const vy = y2 - y1;
+  const lenSq = vx * vx + vy * vy;
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      let t = lenSq === 0 ? 0 : ((x - x1) * vx + (y - y1) * vy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      const px = x1 + t * vx;
+      const py = y1 + t * vy;
+      const dist = Math.sqrt((x - px) * (x - px) + (y - py) * (y - py));
+      if (dist <= radius + 0.8) {
+        const cov = dist <= radius - 0.8 ? 1 : (radius + 0.8 - dist) / 1.6;
+        const a = Math.round(alpha * cov);
+        const idx = (y * w + x) * 4;
+        if (a > buf[idx + 3]) {
+          buf[idx] = 255;
+          buf[idx + 1] = 255;
+          buf[idx + 2] = 255;
+          buf[idx + 3] = a;
+        }
+      }
+    }
+  }
+}
+
+function drawRing(buf, w, h, cx, cy, rx, ry, thickness, alpha) {
+  const minX = Math.max(0, Math.floor(cx - rx - thickness - 2));
+  const maxX = Math.min(w - 1, Math.ceil(cx + rx + thickness + 2));
+  const minY = Math.max(0, Math.floor(cy - ry - thickness - 2));
+  const maxY = Math.min(h - 1, Math.ceil(cy + ry + thickness + 2));
+
+  for (let y = minY; y <= maxY; y++) {
+    for (let x = minX; x <= maxX; x++) {
+      const nx = (x - cx) / rx;
+      const ny = (y - cy) / ry;
+      const d = Math.sqrt(nx * nx + ny * ny);
+      const approxDist = Math.abs(d - 1) * ((rx + ry) * 0.5);
+      if (approxDist <= thickness + 0.8) {
+        const cov = approxDist <= thickness - 0.8 ? 1 : (thickness + 0.8 - approxDist) / 1.6;
+        const a = Math.round(alpha * cov);
+        const idx = (y * w + x) * 4;
+        if (a > buf[idx + 3]) {
+          buf[idx] = 255;
+          buf[idx + 1] = 255;
+          buf[idx + 2] = 255;
+          buf[idx + 3] = a;
+        }
+      }
+    }
+  }
+}
+
+function createHotLankaWatermarkRaw(w, h) {
+  const buf = Buffer.alloc(w * h * 4);
+  const targetW = w * 0.72;
+  const s = targetW / 630;
+  const ox = (w - targetW) / 2;
+  const oy = (h - 110 * s) / 2;
+  const r = Math.max(2, 6.2 * s);
+  const alpha = 82; // ~32% subtle opacity
+
+  const line = (x1, y1, x2, y2) =>
+    drawCapsule(buf, w, h, ox + x1 * s, oy + y1 * s, ox + x2 * s, oy + y2 * s, r, alpha);
+  const ring = (cx, cy, rx, ry) =>
+    drawRing(buf, w, h, ox + cx * s, oy + cy * s, rx * s, ry * s, r, alpha);
+
+  // H
+  line(15, 15, 15, 95);
+  line(15, 55, 62, 55);
+  line(62, 15, 62, 95);
+  // o
+  ring(112, 70, 24, 25);
+  // t
+  line(170, 22, 170, 88);
+  line(170, 88, 186, 95);
+  line(154, 45, 188, 45);
+  // L
+  line(255, 15, 255, 95);
+  line(255, 95, 305, 95);
+  // a
+  ring(348, 71, 22, 24);
+  line(370, 47, 370, 95);
+  // n
+  line(404, 47, 404, 95);
+  line(404, 58, 422, 47);
+  line(422, 47, 442, 56);
+  line(442, 56, 442, 95);
+  // k
+  line(476, 15, 476, 95);
+  line(518, 47, 476, 73);
+  line(492, 63, 522, 95);
+  // a
+  ring(568, 71, 22, 24);
+  line(590, 47, 590, 95);
+
+  return buf;
+}
+
+// --- Ultra-Fast Image Processing (< 0.3s, Zero SVG) ---
 async function processImageWithEffects(fileId, cfg) {
   const fileLink = await bot.telegram.getFileLink(fileId);
   const response = await fetch(fileLink.href);
@@ -125,7 +262,6 @@ async function processImageWithEffects(fileId, cfg) {
     return inputBuffer;
   }
 
-  // Resize to max 900px width for instant processing
   const normalizedBuffer = await sharp(inputBuffer)
     .resize({ width: 900, withoutEnlargement: true })
     .jpeg({ quality: 90 })
@@ -137,11 +273,18 @@ async function processImageWithEffects(fileId, cfg) {
 
   let foregroundBuffer = normalizedBuffer;
 
-  // 1. Apply Subtle Centered Vector Watermark
+  // 1. Apply Subtle Centered Watermark
   if (cfg.watermark_enabled) {
-    const watermarkSvg = createHotLankaWatermarkSvg(origW, origH);
+    const wmRaw = createHotLankaWatermarkRaw(origW, origH);
     foregroundBuffer = await sharp(normalizedBuffer)
-      .composite([{ input: watermarkSvg, left: 0, top: 0 }])
+      .composite([
+        {
+          input: wmRaw,
+          raw: { width: origW, height: origH, channels: 4 },
+          left: 0,
+          top: 0
+        }
+      ])
       .toBuffer();
   }
 
@@ -149,7 +292,7 @@ async function processImageWithEffects(fileId, cfg) {
     return foregroundBuffer;
   }
 
-  // 2. Ultra-Fast Glassmorphism Blurred Frame (Downscale -> Blur -> Upscale trick = 10x faster)
+  // 2. Apply Dynamic Glassmorphism Blurred Frame
   const padX = Math.round(origW * 0.11);
   const padY = Math.round(origH * 0.08);
   const canvasW = origW + padX * 2;
@@ -157,7 +300,7 @@ async function processImageWithEffects(fileId, cfg) {
   const cornerRadius = Math.max(16, Math.round(origW * 0.035));
 
   const smallBlur = await sharp(normalizedBuffer)
-    .resize(220, Math.max(220, Math.round((220 * canvasH) / canvasW)), { fit: 'cover' })
+    .resize(200, Math.max(200, Math.round((200 * canvasH) / canvasW)), { fit: 'cover' })
     .blur(10)
     .modulate({ brightness: 0.65 })
     .toBuffer();
@@ -166,24 +309,30 @@ async function processImageWithEffects(fileId, cfg) {
     .resize(canvasW, canvasH, { fit: 'fill' })
     .toBuffer();
 
-  const roundedMask = Buffer.from(
-    `<svg width="${origW}" height="${origH}"><rect x="0" y="0" width="${origW}" height="${origH}" rx="${cornerRadius}" ry="${cornerRadius}" fill="#ffffff"/></svg>`
-  );
-
+  const maskRaw = createRoundedMaskRaw(origW, origH, cornerRadius);
   const roundedForeground = await sharp(foregroundBuffer)
-    .resize(origW, origH)
-    .composite([{ input: roundedMask, blend: 'dest-in' }])
+    .ensureAlpha()
+    .composite([
+      {
+        input: maskRaw,
+        raw: { width: origW, height: origH, channels: 4 },
+        blend: 'dest-in'
+      }
+    ])
     .png()
     .toBuffer();
 
-  const glassBorder = Buffer.from(
-    `<svg width="${canvasW}" height="${canvasH}"><rect x="${padX}" y="${padY}" width="${origW}" height="${origH}" rx="${cornerRadius}" ry="${cornerRadius}" fill="none" stroke="rgba(255,255,255,0.28)" stroke-width="3"/></svg>`
-  );
+  const borderRaw = createGlassBorderRaw(canvasW, canvasH, padX, padY, origW, origH, cornerRadius);
 
   return await sharp(blurredBg)
     .composite([
       { input: roundedForeground, left: padX, top: padY },
-      { input: glassBorder, left: 0, top: 0 }
+      {
+        input: borderRaw,
+        raw: { width: canvasW, height: canvasH, channels: 4 },
+        left: 0,
+        top: 0
+      }
     ])
     .jpeg({ quality: 88 })
     .toBuffer();
