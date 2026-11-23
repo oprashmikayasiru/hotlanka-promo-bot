@@ -47,6 +47,19 @@ async function getDb() {
   return cachedDb;
 }
 
+// --- Sri Lanka Date & Time Helper ---
+function getSLDateTime() {
+  const now = new Date();
+  const slDate = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
+  const yyyy = slDate.getUTCFullYear();
+  const mm = String(slDate.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(slDate.getUTCDate()).padStart(2, '0');
+  return {
+    dateStr: `${yyyy}-${mm}-${dd}`,
+    curTotalMins: slDate.getUTCHours() * 60 + slDate.getUTCMinutes()
+  };
+}
+
 // --- Default Config Helper ---
 async function getConfig(db) {
   let cfg = await db.collection('settings').findOne({ _id: 'main_config' });
@@ -63,6 +76,8 @@ async function getConfig(db) {
       watermark_text: 'Hot Lanka',
       pending_batch_count: 0,
       last_posted_slot: null,
+      today_date: null,
+      today_posted_count: 0,
       is_posting_locked: false,
       admin_state: null,
       panel_msg_id: null
@@ -176,13 +191,26 @@ async function publishNextQueueItem(db, cfg, notifyAdmin = false) {
   }
 }
 
-// --- Time-Budgeted Batch Execution (7.5s Cutoff + Auto Roll-over) ---
+// --- Time-Budgeted Batch Execution (7.5s Cutoff + Exact Daily Cap) ---
 async function runScheduledBatch(db, startTime) {
   const cfg = await getConfig(db);
   if (!cfg.is_active || cfg.is_posting_locked) return;
 
-  let toPostCount = cfg.pending_batch_count || 0;
-  if (toPostCount <= 0) return;
+  const { dateStr } = getSLDateTime();
+  const dailyLimit = Number(cfg.daily_limit) || 0;
+  let todayPosted = cfg.today_date === dateStr ? (cfg.today_posted_count || 0) : 0;
+  let remainingToday = Math.max(0, dailyLimit - todayPosted);
+
+  let toPostCount = Math.min(cfg.pending_batch_count || 0, remainingToday);
+  if (toPostCount <= 0) {
+    if ((cfg.pending_batch_count || 0) > 0) {
+      await db.collection('settings').updateOne(
+        { _id: 'main_config' },
+        { $set: { pending_batch_count: 0 } }
+      );
+    }
+    return;
+  }
 
   await db.collection('settings').updateOne(
     { _id: 'main_config' },
@@ -190,7 +218,7 @@ async function runScheduledBatch(db, startTime) {
   );
 
   try {
-    while (toPostCount > 0) {
+    while (toPostCount > 0 && remainingToday > 0) {
       if (Date.now() - startTime > 7500) {
         break;
       }
@@ -205,9 +233,17 @@ async function runScheduledBatch(db, startTime) {
       }
       if (res.status === 'posted') {
         toPostCount--;
+        todayPosted++;
+        remainingToday--;
         await db.collection('settings').updateOne(
           { _id: 'main_config' },
-          { $set: { pending_batch_count: toPostCount } }
+          {
+            $set: {
+              pending_batch_count: toPostCount,
+              today_date: dateStr,
+              today_posted_count: todayPosted
+            }
+          }
         );
       }
     }
@@ -822,7 +858,7 @@ bot.on('text', async (ctx) => {
   }
 });
 
-// --- Serverless Entrypoint & Cron Scheduler ---
+// --- Serverless Entrypoint & Smart Cron Scheduler ---
 module.exports = async (req, res) => {
   const startTime = Date.now();
 
@@ -834,44 +870,45 @@ module.exports = async (req, res) => {
       const cfg = await getConfig(db);
 
       if (cfg.is_active) {
-        const now = new Date();
-        const slDate = new Date(now.getTime() + 5.5 * 60 * 60 * 1000);
-        const yyyy = slDate.getUTCFullYear();
-        const mm = String(slDate.getUTCMonth() + 1).padStart(2, '0');
-        const dd = String(slDate.getUTCDate()).padStart(2, '0');
-        const dateStr = `${yyyy}-${mm}-${dd}`;
-
-        const curHour = slDate.getUTCHours();
-        const curMin = slDate.getUTCMinutes();
-        const curTotalMins = curHour * 60 + curMin;
+        const { dateStr, curTotalMins } = getSLDateTime();
+        const dailyLimit = Number(cfg.daily_limit) || 0;
+        const todayPosted = cfg.today_date === dateStr ? (cfg.today_posted_count || 0) : 0;
+        const remainingToday = Math.max(0, dailyLimit - todayPosted);
 
         const times = (cfg.schedule_times || []).sort();
 
-        for (const t of times) {
-          const [tH, tM] = t.split(':').map(Number);
-          const schedTotalMins = tH * 60 + tM;
-          const slotKey = `${dateStr}_${t}`;
+        if (remainingToday > 0 && times.length > 0) {
+          for (let i = 0; i < times.length; i++) {
+            const t = times[i];
+            const [tH, tM] = t.split(':').map(Number);
+            const schedTotalMins = tH * 60 + tM;
+            const slotKey = `${dateStr}_${t}`;
 
-          if (
-            curTotalMins >= schedTotalMins &&
-            curTotalMins <= schedTotalMins + 20 &&
-            cfg.last_posted_slot !== slotKey
-          ) {
-            const postsForThisSlot =
-              times.length === 1
-                ? cfg.daily_limit
-                : Math.max(1, Math.ceil(cfg.daily_limit / times.length));
+            if (
+              curTotalMins >= schedTotalMins &&
+              curTotalMins <= schedTotalMins + 20 &&
+              cfg.last_posted_slot !== slotKey
+            ) {
+              // Distribute remaining daily posts evenly across remaining schedule slots
+              const remainingSlots = times.length - i;
+              const postsForThisSlot = Math.min(
+                remainingToday,
+                Math.max(1, Math.ceil(remainingToday / remainingSlots))
+              );
 
-            await db.collection('settings').updateOne(
-              { _id: 'main_config' },
-              {
-                $set: {
-                  last_posted_slot: slotKey,
-                  pending_batch_count: (cfg.pending_batch_count || 0) + postsForThisSlot
+              await db.collection('settings').updateOne(
+                { _id: 'main_config' },
+                {
+                  $set: {
+                    last_posted_slot: slotKey,
+                    today_date: dateStr,
+                    today_posted_count: todayPosted,
+                    pending_batch_count: postsForThisSlot
+                  }
                 }
-              }
-            );
-            break;
+              );
+              break;
+            }
           }
         }
 
