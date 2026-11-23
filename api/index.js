@@ -779,24 +779,21 @@ bot.action('cap_menu_video', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// Non-Destructive Post Preview with Reply Keyboard "Close Preview" Button
+// Non-Destructive Post Preview (Zero Extra Chat Messages)
 bot.action(/preview_post_(photo|video)/, async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const targetType = ctx.match[1];
   const db = await getDb();
   const cfg = await getConfig(db);
 
-  // Clean up any previous unclosed preview message first
   if (cfg.preview_msg_id) {
     await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_msg_id).catch(() => {});
   }
 
-  // Exact channel inline button on the preview post
   const postInlineKeyboard = Markup.inlineKeyboard([
     [Markup.button.url('Contact Admin', CONTACT_ADMIN_URL)]
   ]);
 
-  // Bottom Reply Keyboard (below "Write a message...")
   const replyCloseKeyboard = Markup.keyboard([['🗑 Close Preview']])
     .resize()
     .oneTime();
@@ -812,7 +809,7 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
       return ctx.answerCbQuery('📭 No photos in queue to preview! Send a photo first.', { show_alert: true }).catch(() => {});
     }
 
-    await ctx.answerCbQuery('⏳ Generating photo preview...').catch(() => {});
+    await ctx.answerCbQuery().catch(() => {});
     try {
       const mediaSource = await buildTransformedPhoto(samplePhoto.file_id, cfg);
       const captionPayload = getCaptionPayload(cfg, 'photo');
@@ -820,13 +817,11 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...captionPayload,
         ...postInlineKeyboard
       });
-      const sentHint = await ctx.reply('👁 <b>Photo Post Preview</b> — Tap <b>Close Preview</b> below when done.', {
-        parse_mode: 'HTML',
-        ...replyCloseKeyboard
-      });
+      const sentHint = await ctx.reply('.', replyCloseKeyboard);
+      await bot.telegram.deleteMessage(ADMIN_ID, sentHint.message_id).catch(() => {});
       await db.collection('settings').updateOne(
         { _id: 'main_config' },
-        { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentHint.message_id } }
+        { $set: { preview_msg_id: sentPreview.message_id } }
       );
     } catch (err) {
       await ctx.answerCbQuery(`❌ Preview failed: ${err.message}`, { show_alert: true }).catch(() => {});
@@ -845,7 +840,7 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
     return ctx.answerCbQuery('📭 No videos in queue to preview! Send a video first.', { show_alert: true }).catch(() => {});
   }
 
-  await ctx.answerCbQuery('⏳ Loading video preview...').catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
   try {
     const captionPayload = getCaptionPayload(cfg, 'video');
     let sentPreview;
@@ -861,13 +856,11 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...postInlineKeyboard
       });
     }
-    const sentHint = await ctx.reply('👁 <b>Video Post Preview</b> — Tap <b>Close Preview</b> below when done.', {
-      parse_mode: 'HTML',
-      ...replyCloseKeyboard
-    });
+    const sentHint = await ctx.reply('.', replyCloseKeyboard);
+    await bot.telegram.deleteMessage(ADMIN_ID, sentHint.message_id).catch(() => {});
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
-      { $set: { preview_msg_id: sentPreview.message_id, preview_hint_id: sentHint.message_id } }
+      { $set: { preview_msg_id: sentPreview.message_id } }
     );
   } catch (err) {
     await ctx.answerCbQuery(`❌ Preview failed: ${err.message}`, { show_alert: true }).catch(() => {});
@@ -1061,23 +1054,18 @@ bot.on('text', async (ctx) => {
   const cfg = await getConfig(db);
   const rawText = ctx.message.text;
 
-  // Handle Reply Keyboard "Close Preview" button
+  // Handle Reply Keyboard "Close Preview" button with zero leftover chat messages
   if (rawText.trim() === '🗑 Close Preview') {
     await ctx.deleteMessage().catch(() => {});
     if (cfg.preview_msg_id) {
       await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_msg_id).catch(() => {});
     }
-    if (cfg.preview_hint_id) {
-      await bot.telegram.deleteMessage(ADMIN_ID, cfg.preview_hint_id).catch(() => {});
-    }
     await db.collection('settings').updateOne(
       { _id: 'main_config' },
-      { $set: { preview_msg_id: null, preview_hint_id: null } }
+      { $set: { preview_msg_id: null } }
     );
-    const removedMsg = await ctx.reply('✅ Preview closed.', Markup.removeKeyboard());
-    setTimeout(() => {
-      bot.telegram.deleteMessage(ADMIN_ID, removedMsg.message_id).catch(() => {});
-    }, 800);
+    const removedMsg = await ctx.reply('.', Markup.removeKeyboard());
+    await bot.telegram.deleteMessage(ADMIN_ID, removedMsg.message_id).catch(() => {});
     return;
   }
 
