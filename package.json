@@ -9,6 +9,6 @@
     "telegraf": "^4.16.3"
   },
   "engines": {
-    "node": "20.x"
+    "node": "26.x"
   }
 }
