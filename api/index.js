@@ -76,7 +76,7 @@ async function getConfig(db) {
       watermark_text: 'Hot Lanka',
       pending_batch_count: 0,
       last_posted_slot: null,
-      last_posted_media_type: 'video', // Ensures Photo -> Video -> Photo alternation
+      last_posted_media_type: 'video',
       today_date: null,
       today_posted_count: 0,
       is_posting_locked: false,
@@ -136,16 +136,16 @@ async function buildTransformedPhoto(fileId, cfg) {
   );
 }
 
-// --- Pick Next Item Following Photo -> Video -> Photo Alternation ---
+// --- Pick Next Item Following Photo -> Video/GIF -> Photo Alternation ---
 async function pickNextAlternatingItem(db, cfg) {
   const lastType = cfg.last_posted_media_type || 'video';
-  const preferredType = lastType === 'photo' ? 'video' : 'photo';
+  const preferredGroup = lastType === 'photo' ? 'motion' : 'photo';
 
   const photoQuery = { $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }] };
-  const videoQuery = { media_type: 'video' };
+  const motionQuery = { media_type: { $in: ['video', 'animation'] } };
 
-  const primaryQuery = preferredType === 'video' ? videoQuery : photoQuery;
-  const fallbackQuery = preferredType === 'video' ? photoQuery : videoQuery;
+  const primaryQuery = preferredGroup === 'motion' ? motionQuery : photoQuery;
+  const fallbackQuery = preferredGroup === 'motion' ? photoQuery : motionQuery;
 
   let item = await db.collection('queue')
     .find(primaryQuery)
@@ -181,7 +181,11 @@ async function publishNextQueueItem(db, cfg) {
       return { status: 'empty' };
     }
 
-    const itemType = nextItem.media_type === 'video' ? 'video' : 'photo';
+    const itemType = nextItem.media_type === 'animation'
+      ? 'animation'
+      : nextItem.media_type === 'video'
+        ? 'video'
+        : 'photo';
 
     try {
       const postOptions = {
@@ -195,6 +199,8 @@ async function publishNextQueueItem(db, cfg) {
           ...postOptions,
           supports_streaming: true
         });
+      } else if (itemType === 'animation') {
+        await bot.telegram.sendAnimation(TARGET_CHANNEL_ID, nextItem.file_id, postOptions);
       } else {
         const mediaSource = await buildTransformedPhoto(nextItem.file_id, cfg);
         await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, mediaSource, postOptions);
@@ -202,10 +208,11 @@ async function publishNextQueueItem(db, cfg) {
 
       await db.collection('queue').deleteOne({ _id: nextItem._id });
 
-      cfg.last_posted_media_type = itemType;
+      const groupMarker = itemType === 'photo' ? 'photo' : 'video';
+      cfg.last_posted_media_type = groupMarker;
       await db.collection('settings').updateOne(
         { _id: 'main_config' },
-        { $set: { last_posted_media_type: itemType } }
+        { $set: { last_posted_media_type: groupMarker } }
       );
 
       return { status: 'posted', mediaType: itemType };
@@ -312,7 +319,9 @@ async function renderAdminText(db, cfg) {
   const photoCount = await db.collection('queue').countDocuments({
     $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }]
   });
-  const videoCount = await db.collection('queue').countDocuments({ media_type: 'video' });
+  const videoCount = await db.collection('queue').countDocuments({
+    media_type: { $in: ['video', 'animation'] }
+  });
   const totalCount = photoCount + videoCount;
 
   const timesStr = (cfg.schedule_times || []).sort().join(', ') || 'None';
@@ -439,7 +448,7 @@ bot.command('cancel', async (ctx) => {
   }
 });
 
-// --- Media Ingestion (Photos & Videos) ---
+// --- Media Ingestion (Photos, Videos & Animations/GIFs) ---
 const albumCounters = new Map();
 
 async function handleMediaIngestion(ctx, fileId, mediaType) {
@@ -459,7 +468,9 @@ async function handleMediaIngestion(ctx, fileId, mediaType) {
   });
 
   if (!mediaGroupId) {
-    const label = mediaType === 'video' ? '🎬 Video added to queue.' : '✅ Added to queue.';
+    const label = mediaType === 'video' || mediaType === 'animation'
+      ? '🎬 Video added to queue.'
+      : '✅ Added to queue.';
     await ctx.reply(label);
     const cfg = await getConfig(db);
     if (cfg.panel_msg_id && !cfg.admin_state) {
@@ -509,6 +520,11 @@ bot.on('video', async (ctx) => {
   await handleMediaIngestion(ctx, ctx.message.video.file_id, 'video');
 });
 
+bot.on('animation', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return;
+  await handleMediaIngestion(ctx, ctx.message.animation.file_id, 'animation');
+});
+
 // --- Admin Callback Actions ---
 bot.action('noop', (ctx) => ctx.answerCbQuery().catch(() => {}));
 
@@ -555,7 +571,7 @@ bot.action('admin_post_now', async (ctx) => {
   const res = await publishNextQueueItem(db, cfg);
 
   if (res.status === 'posted') {
-    const typeLabel = res.mediaType === 'video' ? '🎬 Video' : '🖼 Photo';
+    const typeLabel = res.mediaType === 'photo' ? '🖼 Photo' : '🎬 Video';
     await ctx.answerCbQuery(`🚀 ${typeLabel} posted to Hot Lanka channel!`, { show_alert: true }).catch(() => {});
   } else if (res.status === 'empty') {
     await ctx.answerCbQuery('📭 Queue is empty! Send some photos or videos first.', { show_alert: true }).catch(() => {});
@@ -725,7 +741,7 @@ bot.action('toggle_watermark', async (ctx) => {
   await ctx.answerCbQuery(`Watermark: ${cfg.watermark_enabled ? '🟢 ON' : '🔴 OFF'}`).catch(() => {});
 });
 
-// --- Visual Queue Manager (Supports Both Photos & Videos) ---
+// --- Visual Queue Manager (Supports Photos, Videos & Animations) ---
 async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
   const items = await db.collection('queue').find({}).sort({ order: 1, message_id: 1, _id: 1 }).toArray();
 
@@ -749,11 +765,16 @@ async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
 
   const safeIndex = Math.max(0, Math.min(index, items.length - 1));
   const item = items[safeIndex];
-  const isVideo = item.media_type === 'video';
+  const mType = item.media_type === 'animation'
+    ? 'animation'
+    : item.media_type === 'video'
+      ? 'video'
+      : 'photo';
+
   const prevIdx = safeIndex > 0 ? safeIndex - 1 : items.length - 1;
   const nextIdx = safeIndex < items.length - 1 ? safeIndex + 1 : 0;
 
-  const badge = isVideo ? '🎬 Video' : '🖼 Photo';
+  const badge = mType === 'photo' ? '🖼 Photo' : '🎬 Video';
   const caption = `${badge} — <b>Queue Item #${safeIndex + 1} of ${items.length}</b>`;
   const keyboard = Markup.inlineKeyboard([
     [
@@ -769,8 +790,14 @@ async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
   ]);
 
   if (isNewMessage) {
-    if (isVideo) {
+    if (mType === 'video') {
       await ctx.replyWithVideo(item.file_id, {
+        caption,
+        parse_mode: 'HTML',
+        ...keyboard
+      });
+    } else if (mType === 'animation') {
+      await ctx.replyWithAnimation(item.file_id, {
         caption,
         parse_mode: 'HTML',
         ...keyboard
@@ -785,7 +812,7 @@ async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
   } else {
     await ctx.editMessageMedia(
       {
-        type: isVideo ? 'video' : 'photo',
+        type: mType,
         media: item.file_id,
         caption,
         parse_mode: 'HTML'
