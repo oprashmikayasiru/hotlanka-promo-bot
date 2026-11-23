@@ -1,7 +1,7 @@
 {
   "name": "vip-promo-queue-bot",
   "version": "1.0.0",
-  "description": "Telegram VIP Promo Queue Bot",
+  "description": "Telegram VIP Promo Queue Bot with Cloudinary Glassmorphism & Watermark",
   "main": "api/index.js",
   "dependencies": {
     "mongodb": "^6.5.0",
