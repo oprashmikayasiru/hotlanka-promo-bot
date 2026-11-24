@@ -161,6 +161,22 @@ async function buildTransformedPhoto(fileId, cfg) {
   );
 }
 
+// --- Safe Photo Sender (Fetches Cloudinary Image as Buffer + Fallback to Original file_id) ---
+async function sendTransformedPhotoSafe(chatId, fileId, cfg, options) {
+  const mediaSource = await buildTransformedPhoto(fileId, cfg);
+  if (typeof mediaSource === 'string' && mediaSource.startsWith('http')) {
+    try {
+      const imgRes = await fetch(mediaSource);
+      if (!imgRes.ok) throw new Error(`HTTP ${imgRes.status}`);
+      const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
+      return await bot.telegram.sendPhoto(chatId, { source: imgBuffer }, options);
+    } catch (fetchErr) {
+      return await bot.telegram.sendPhoto(chatId, fileId, options);
+    }
+  }
+  return await bot.telegram.sendPhoto(chatId, mediaSource, options);
+}
+
 // --- Pick Next Item Following Photo -> Video/GIF -> Photo Alternation ---
 async function pickNextAlternatingItem(db, cfg) {
   const lastType = cfg.last_posted_media_type || 'video';
@@ -227,8 +243,7 @@ async function publishNextQueueItem(db, cfg) {
       } else if (itemType === 'animation') {
         await bot.telegram.sendAnimation(TARGET_CHANNEL_ID, nextItem.file_id, postOptions);
       } else {
-        const mediaSource = await buildTransformedPhoto(nextItem.file_id, cfg);
-        await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, mediaSource, postOptions);
+        await sendTransformedPhotoSafe(TARGET_CHANNEL_ID, nextItem.file_id, cfg, postOptions);
       }
 
       await db.collection('queue').deleteOne({ _id: nextItem._id });
@@ -780,7 +795,7 @@ bot.action('cap_menu_video', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// Non-Destructive Post Preview (Reply Keyboard Opens BEFORE Preview Post So Nothing Appears Below It)
+// Non-Destructive Post Preview with Reply Keyboard "🗑 Close Preview"
 bot.action(/preview_post_(photo|video)/, async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const targetType = ctx.match[1];
@@ -822,9 +837,8 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         parse_mode: 'HTML',
         ...replyCloseKeyboard
       });
-      const mediaSource = await buildTransformedPhoto(samplePhoto.file_id, cfg);
       const captionPayload = getCaptionPayload(cfg, 'photo');
-      const sentPreview = await ctx.replyWithPhoto(mediaSource, {
+      const sentPreview = await sendTransformedPhotoSafe(ADMIN_ID, samplePhoto.file_id, cfg, {
         ...captionPayload,
         ...postInlineKeyboard
       });
