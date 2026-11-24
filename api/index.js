@@ -19,8 +19,6 @@ async function setupAdminCommands() {
       [
         { command: 'start', description: 'Check Bot Status' },
         { command: 'admin', description: 'Open Control Panel' },
-        { command: 'clearphotos', description: 'Clear All Photos from Queue' },
-        { command: 'clearvideos', description: 'Clear All Videos from Queue' },
         { command: 'cancel', description: 'Cancel Current Action' }
       ],
       { scope: { type: 'chat', chat_id: ADMIN_ID } }
