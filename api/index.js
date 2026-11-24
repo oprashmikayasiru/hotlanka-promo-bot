@@ -6,7 +6,6 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID;
-const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME;
 const CONTACT_ADMIN_URL = process.env.CONTACT_ADMIN_URL || 'https://t.me/LankaAdmin_bot';
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -20,6 +19,8 @@ async function setupAdminCommands() {
       [
         { command: 'start', description: 'Check Bot Status' },
         { command: 'admin', description: 'Open Control Panel' },
+        { command: 'clearphotos', description: 'Clear All Photos from Queue' },
+        { command: 'clearvideos', description: 'Clear All Videos from Queue' },
         { command: 'cancel', description: 'Cancel Current Action' }
       ],
       { scope: { type: 'chat', chat_id: ADMIN_ID } }
@@ -73,9 +74,6 @@ async function getConfig(db) {
       caption_entities: [],
       video_caption_text: '🎬 NEW VIP VIDEO PREVIEW!\n\n✅ Watch Full Uncut Video inside VIP.\n💰 VIP Access: Rs. 500/= Only',
       video_caption_entities: [],
-      blur_frame: true,
-      watermark_enabled: true,
-      watermark_text: 'Hot Lanka',
       pending_batch_count: 0,
       last_posted_slot: null,
       last_posted_media_type: 'video',
@@ -114,69 +112,6 @@ function getCaptionPayload(cfg, itemType) {
   };
 }
 
-// --- Build Uniform 1080x1350 Cloudinary URL for Photos ---
-async function buildTransformedPhoto(fileId, cfg) {
-  const useBlur = cfg.blur_frame !== false;
-  const useWm = cfg.watermark_enabled !== false;
-
-  if ((!useBlur && !useWm) || !CLOUDINARY_CLOUD_NAME) {
-    return fileId;
-  }
-
-  const fileLink = await bot.telegram.getFileLink(fileId);
-  const rawUrl = fileLink.href;
-  const encodedUrl = encodeURIComponent(rawUrl);
-  const wmText = encodeURIComponent(cfg.watermark_text || 'Hot Lanka');
-
-  if (!useBlur && useWm) {
-    return (
-      `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/` +
-      `c_limit,w_1280,h_1280/` +
-      `l_text:Arial_54_bold:${wmText},co_white,o_35,g_center/` +
-      `f_jpg,q_90/` +
-      `${encodedUrl}`
-    );
-  }
-
-  const base64Url = Buffer.from(rawUrl)
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-
-  const wmLayer = useWm
-    ? `/l_text:Arial_58_bold:${wmText},co_white,o_35,g_center`
-    : '';
-
-  return (
-    `https://res.cloudinary.com/${CLOUDINARY_CLOUD_NAME}/image/fetch/` +
-    `w_1080,h_1350,c_fill/` +
-    `e_pixelate:16/` +
-    `e_blur:2000/` +
-    `e_brightness:-35/` +
-    `l_fetch:${base64Url},w_1005,h_1265,c_fit,r_22,g_center` +
-    `${wmLayer}/` +
-    `f_jpg,q_90/` +
-    `${encodedUrl}`
-  );
-}
-
-// --- Safe Photo Sender (Fetches Cloudinary Image as Buffer + Fallback to Original file_id) ---
-async function sendTransformedPhotoSafe(chatId, fileId, cfg, options) {
-  const mediaSource = await buildTransformedPhoto(fileId, cfg);
-  if (typeof mediaSource === 'string' && mediaSource.startsWith('http')) {
-    try {
-      const imgRes = await fetch(mediaSource);
-      if (!imgRes.ok) throw new Error(`HTTP ${imgRes.status}`);
-      const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
-      return await bot.telegram.sendPhoto(chatId, { source: imgBuffer }, options);
-    } catch (fetchErr) {
-      return await bot.telegram.sendPhoto(chatId, fileId, options);
-    }
-  }
-  return await bot.telegram.sendPhoto(chatId, mediaSource, options);
-}
-
 // --- Pick Next Item Following Photo -> Video/GIF -> Photo Alternation ---
 async function pickNextAlternatingItem(db, cfg) {
   const lastType = cfg.last_posted_media_type || 'video';
@@ -205,7 +140,7 @@ async function pickNextAlternatingItem(db, cfg) {
   return item;
 }
 
-// --- Publish Single Next Valid Item from Queue (Silent — No Chat Spam) ---
+// --- Publish Single Next Valid Item from Queue (Direct file_id — Zero External Processing) ---
 async function publishNextQueueItem(db, cfg) {
   if (!TARGET_CHANNEL_ID) {
     return { status: 'error', reason: 'Missing TARGET_CHANNEL_ID' };
@@ -243,7 +178,7 @@ async function publishNextQueueItem(db, cfg) {
       } else if (itemType === 'animation') {
         await bot.telegram.sendAnimation(TARGET_CHANNEL_ID, nextItem.file_id, postOptions);
       } else {
-        await sendTransformedPhotoSafe(TARGET_CHANNEL_ID, nextItem.file_id, cfg, postOptions);
+        await bot.telegram.sendPhoto(TARGET_CHANNEL_ID, nextItem.file_id, postOptions);
       }
 
       await db.collection('queue').deleteOne({ _id: nextItem._id });
@@ -365,20 +300,14 @@ async function renderAdminText(db, cfg) {
   const totalCount = photoCount + videoCount;
 
   const timesStr = (cfg.schedule_times || []).sort().join(', ') || 'None';
-  const frameStatus = cfg.blur_frame !== false ? '🟢' : '🔴';
-  const wmStatus = cfg.watermark_enabled !== false ? '🟢' : '🔴';
-
-  const queueDetail = videoCount > 0
-    ? `${totalCount} Pending (🖼 ${photoCount} | 🎬 ${videoCount})`
-    : `${totalCount} Pending`;
+  const queueDetail = `${totalCount} Pending (🖼 ${photoCount} | 🎬 ${videoCount})`;
 
   return (
     `⚙️ <b>VIP PROMO CONTROL PANEL</b>\n\n` +
     `📊 <b>Status:</b> ${cfg.is_active ? '🟢 ACTIVE' : '🔴 PAUSED'}\n` +
     `📦 <b>Daily Limit:</b> ${cfg.daily_limit} Posts / Day\n` +
     `⏰ <b>Schedule:</b> ${timesStr}\n` +
-    `🖼 <b>Queue:</b> ${queueDetail}\n` +
-    `🎨 <b>Effects:</b> Blur Frame ${frameStatus} | Watermark ${wmStatus}`
+    `🖼 <b>Queue:</b> ${queueDetail}`
   );
 }
 
@@ -392,9 +321,8 @@ function getAdminKeyboard(cfg) {
     ],
     [
       Markup.button.callback('📝 Set Caption', 'admin_ui_caption'),
-      Markup.button.callback('🖼 Manage Queue', 'admin_queue_0')
+      Markup.button.callback('🖼 Manage Queue', 'admin_ui_queue_menu')
     ],
-    [Markup.button.callback('🎨 Image Effects', 'admin_ui_effects')],
     [
       Markup.button.callback(activeLabel, 'admin_toggle_status'),
       Markup.button.callback('🔄 Refresh', 'admin_refresh')
@@ -413,26 +341,6 @@ function getTimesKeyboard(times) {
   buttons.push([Markup.button.callback('➕ Add Custom Time', 'admin_ui_add_time')]);
   buttons.push([Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]);
   return Markup.inlineKeyboard(buttons);
-}
-
-function getEffectsKeyboard(cfg) {
-  const blurOn = cfg.blur_frame !== false;
-  const wmOn = cfg.watermark_enabled !== false;
-  return Markup.inlineKeyboard([
-    [
-      Markup.button.callback(
-        `🖼 Blur Frame: ${blurOn ? '🟢 ON' : '🔴 OFF'}`,
-        'toggle_blur_frame'
-      )
-    ],
-    [
-      Markup.button.callback(
-        `💧 Watermark: ${wmOn ? '🟢 ON' : '🔴 OFF'}`,
-        'toggle_watermark'
-      )
-    ],
-    [Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]
-  ]);
 }
 
 // --- Commands ---
@@ -465,6 +373,52 @@ bot.command('admin', async (ctx) => {
     { _id: 'main_config' },
     { $set: { panel_msg_id: sent.message_id, admin_state: null } }
   );
+});
+
+bot.command('clearphotos', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return;
+  await ctx.deleteMessage().catch(() => {});
+  const db = await getDb();
+  const res = await db.collection('queue').deleteMany({
+    $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }]
+  });
+  const cfg = await getConfig(db);
+  if (cfg.panel_msg_id) {
+    await bot.telegram.editMessageText(
+      ADMIN_ID,
+      cfg.panel_msg_id,
+      undefined,
+      await renderAdminText(db, cfg),
+      { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
+    ).catch(() => {});
+  }
+  const notice = await ctx.reply(`🗑 Cleared ${res.deletedCount} photo(s) from queue.`);
+  setTimeout(() => {
+    bot.telegram.deleteMessage(ADMIN_ID, notice.message_id).catch(() => {});
+  }, 3500);
+});
+
+bot.command('clearvideos', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return;
+  await ctx.deleteMessage().catch(() => {});
+  const db = await getDb();
+  const res = await db.collection('queue').deleteMany({
+    media_type: { $in: ['video', 'animation'] }
+  });
+  const cfg = await getConfig(db);
+  if (cfg.panel_msg_id) {
+    await bot.telegram.editMessageText(
+      ADMIN_ID,
+      cfg.panel_msg_id,
+      undefined,
+      await renderAdminText(db, cfg),
+      { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
+    ).catch(() => {});
+  }
+  const notice = await ctx.reply(`🗑 Cleared ${res.deletedCount} video(s) from queue.`);
+  setTimeout(() => {
+    bot.telegram.deleteMessage(ADMIN_ID, notice.message_id).catch(() => {});
+  }, 3500);
 });
 
 bot.command('cancel', async (ctx) => {
@@ -510,7 +464,7 @@ async function handleMediaIngestion(ctx, fileId, mediaType) {
   if (!mediaGroupId) {
     const label = mediaType === 'video' || mediaType === 'animation'
       ? '🎬 Video added to queue.'
-      : '✅ Added to queue.';
+      : '✅ Photo added to queue.';
     await ctx.reply(label);
     const cfg = await getConfig(db);
     if (cfg.panel_msg_id && !cfg.admin_state) {
@@ -625,7 +579,7 @@ bot.action('admin_post_now', async (ctx) => {
   }).catch(() => {});
 });
 
-// Daily Limit Menu (In-Place Edit)
+// Daily Limit Menu
 bot.action('admin_ui_limit', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const kb = Markup.inlineKeyboard([
@@ -669,7 +623,7 @@ bot.action(/set_limit_(\d+)/, async (ctx) => {
   }).catch(() => {});
 });
 
-// Schedule Times Menu (In-Place Edit)
+// Schedule Times Menu
 bot.action('admin_ui_times', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
@@ -838,7 +792,7 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
         ...replyCloseKeyboard
       });
       const captionPayload = getCaptionPayload(cfg, 'photo');
-      const sentPreview = await sendTransformedPhotoSafe(ADMIN_ID, samplePhoto.file_id, cfg, {
+      const sentPreview = await ctx.replyWithPhoto(samplePhoto.file_id, {
         ...captionPayload,
         ...postInlineKeyboard
       });
@@ -852,7 +806,6 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
     return;
   }
 
-  // Video / GIF Preview
   const sampleVideo = await db.collection('queue')
     .find({ media_type: { $in: ['video', 'animation'] } })
     .sort({ order: 1, message_id: 1, _id: 1 })
@@ -892,48 +845,104 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
   }
 });
 
-// Image Effects Menu (In-Place Edit)
-bot.action('admin_ui_effects', async (ctx) => {
+// --- Queue Management Hub (Browse Queue + Clear Photos / Clear Videos Buttons) ---
+async function renderQueueMenuText(db) {
+  const photoCount = await db.collection('queue').countDocuments({
+    $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }]
+  });
+  const videoCount = await db.collection('queue').countDocuments({
+    media_type: { $in: ['video', 'animation'] }
+  });
+  return (
+    `🖼 <b>MANAGE QUEUE</b>\n\n` +
+    `🖼 <b>Photos in Queue:</b> ${photoCount}\n` +
+    `🎬 <b>Videos in Queue:</b> ${videoCount}\n\n` +
+    `Browse items individually or clear a specific media type below:`
+  );
+}
+
+function getQueueMenuKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback('🔍 Browse Queue Items', 'admin_queue_0')],
+    [
+      Markup.button.callback('🗑 Clear All Photos', 'confirm_clear_photos'),
+      Markup.button.callback('🗑 Clear All Videos', 'confirm_clear_videos')
+    ],
+    [Markup.button.callback('🔙 Back to Menu', 'admin_refresh')]
+  ]);
+}
+
+bot.action('admin_ui_queue_menu', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
-  const cfg = await getConfig(db);
+  await ctx.editMessageText(await renderQueueMenuText(db), {
+    parse_mode: 'HTML',
+    ...getQueueMenuKeyboard()
+  }).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+});
+
+bot.action('confirm_clear_photos', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   await ctx.editMessageText(
-    '🎨 <b>IMAGE EFFECTS SETTINGS</b>\n\nToggle effects individually below:',
+    '⚠️ <b>CLEAR ALL PHOTOS?</b>\n\nAre you sure you want to remove all queued photos? (Videos will stay untouched)',
     {
       parse_mode: 'HTML',
-      ...getEffectsKeyboard(cfg)
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('✅ Yes, Clear Photos', 'exec_clear_photos'),
+          Markup.button.callback('❌ Cancel', 'admin_ui_queue_menu')
+        ]
+      ])
     }
   ).catch(() => {});
   await ctx.answerCbQuery().catch(() => {});
 });
 
-bot.action('toggle_blur_frame', async (ctx) => {
+bot.action('exec_clear_photos', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
-  const cfg = await getConfig(db);
-  cfg.blur_frame = cfg.blur_frame === false ? true : false;
-  await db.collection('settings').updateOne(
-    { _id: 'main_config' },
-    { $set: { blur_frame: cfg.blur_frame } }
-  );
-  await ctx.editMessageReplyMarkup(getEffectsKeyboard(cfg).reply_markup).catch(() => {});
-  await ctx.answerCbQuery(`Blur Frame: ${cfg.blur_frame ? '🟢 ON' : '🔴 OFF'}`).catch(() => {});
+  const res = await db.collection('queue').deleteMany({
+    $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }]
+  });
+  await ctx.answerCbQuery(`🗑 Cleared ${res.deletedCount} photo(s)!`, { show_alert: true }).catch(() => {});
+  await ctx.editMessageText(await renderQueueMenuText(db), {
+    parse_mode: 'HTML',
+    ...getQueueMenuKeyboard()
+  }).catch(() => {});
 });
 
-bot.action('toggle_watermark', async (ctx) => {
+bot.action('confirm_clear_videos', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
+  await ctx.editMessageText(
+    '⚠️ <b>CLEAR ALL VIDEOS?</b>\n\nAre you sure you want to remove all queued videos? (Photos will stay untouched)',
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('✅ Yes, Clear Videos', 'exec_clear_videos'),
+          Markup.button.callback('❌ Cancel', 'admin_ui_queue_menu')
+        ]
+      ])
+    }
+  ).catch(() => {});
+  await ctx.answerCbQuery().catch(() => {});
+});
+
+bot.action('exec_clear_videos', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
-  const cfg = await getConfig(db);
-  cfg.watermark_enabled = cfg.watermark_enabled === false ? true : false;
-  await db.collection('settings').updateOne(
-    { _id: 'main_config' },
-    { $set: { watermark_enabled: cfg.watermark_enabled } }
-  );
-  await ctx.editMessageReplyMarkup(getEffectsKeyboard(cfg).reply_markup).catch(() => {});
-  await ctx.answerCbQuery(`Watermark: ${cfg.watermark_enabled ? '🟢 ON' : '🔴 OFF'}`).catch(() => {});
+  const res = await db.collection('queue').deleteMany({
+    media_type: { $in: ['video', 'animation'] }
+  });
+  await ctx.answerCbQuery(`🗑 Cleared ${res.deletedCount} video(s)!`, { show_alert: true }).catch(() => {});
+  await ctx.editMessageText(await renderQueueMenuText(db), {
+    parse_mode: 'HTML',
+    ...getQueueMenuKeyboard()
+  }).catch(() => {});
 });
 
-// --- Visual Queue Manager (Supports Photos, Videos & Animations) ---
+// --- Visual Queue Viewer ---
 async function sendOrUpdateQueueViewer(ctx, db, index, isNewMessage = false) {
   const items = await db.collection('queue').find({}).sort({ order: 1, message_id: 1, _id: 1 }).toArray();
 
@@ -1072,14 +1081,13 @@ bot.action('q_back_panel', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// --- Text Input Handler (Handles Close Preview Keyboard + Auto-Deletes User Input) ---
+// --- Text Input Handler ---
 bot.on('text', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
   const db = await getDb();
   const cfg = await getConfig(db);
   const rawText = ctx.message.text;
 
-  // Handle Reply Keyboard "🗑 Close Preview" button cleanly
   if (rawText.trim() === '🗑 Close Preview') {
     await ctx.deleteMessage().catch(() => {});
     if (cfg.preview_msg_id) {
@@ -1218,7 +1226,6 @@ module.exports = async (req, res) => {
   try {
     const db = await getDb();
 
-    // 1. Cron Ping (GET - cron-job.org)
     if (req.method === 'GET') {
       const cfg = await getConfig(db);
 
@@ -1270,7 +1277,6 @@ module.exports = async (req, res) => {
       return res.status(200).json({ ok: true, status: 'cron_checked' });
     }
 
-    // 2. Telegram Webhook Update (POST)
     if (req.method === 'POST' && req.body) {
       await bot.handleUpdate(req.body);
       return res.status(200).json({ ok: true });
