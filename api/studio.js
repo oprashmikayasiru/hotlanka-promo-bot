@@ -153,6 +153,19 @@ module.exports = async (req, res) => {
     }
 
     if (action === 'send_picker') {
+      const adminRights = {
+        is_anonymous: false,
+        can_manage_chat: true,
+        can_delete_messages: true,
+        can_manage_video_chats: false,
+        can_restrict_members: false,
+        can_promote_members: false,
+        can_change_info: false,
+        can_invite_users: false,
+        can_post_messages: true,
+        can_edit_messages: true
+      };
+
       await bot.telegram.sendMessage(
         ADMIN_ID,
         '📢 Tap the button below to pick a channel:',
@@ -165,14 +178,8 @@ module.exports = async (req, res) => {
                   request_chat: {
                     request_id: 101,
                     chat_is_channel: true,
-                    user_administrator_rights: {
-                      can_post_messages: true
-                    },
-                    bot_administrator_rights: {
-                      can_post_messages: true,
-                      can_edit_messages: true,
-                      can_delete_messages: true
-                    }
+                    user_administrator_rights: adminRights,
+                    bot_administrator_rights: adminRights
                   }
                 }
               ],
