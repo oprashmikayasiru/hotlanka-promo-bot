@@ -4,11 +4,19 @@
     "api/index.js": {
       "memory": 512,
       "maxDuration": 10
+    },
+    "api/studio.js": {
+      "memory": 512,
+      "maxDuration": 10
     }
   },
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/api/studio",
+      "destination": "/api/studio.js"
+    },
+    {
+      "source": "/api/index",
       "destination": "/api/index.js"
     }
   ]
