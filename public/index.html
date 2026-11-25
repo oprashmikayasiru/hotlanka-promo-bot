@@ -1023,8 +1023,7 @@
       ae.isContentEditable ||
       (ae.tagName === 'INPUT' && ['text', 'password', 'url', 'search', 'email', 'number'].includes(ae.type))
     );
-    const vv = window.visualViewport;
-    const kbOpen = Boolean(isTextInput || (vv && vv.height < window.innerHeight * 0.78));
+    const kbOpen = Boolean(isTextInput);
 
     document.getElementById('bottomNavWrap').classList.toggle('kb-hidden', kbOpen);
 
@@ -1034,9 +1033,6 @@
       kbBtn.classList.remove('hidden');
     } else {
       kbBtn.classList.add('hidden');
-      if (!kbOpen && window.scrollY > 0) {
-        window.scrollTo(0, 0);
-      }
     }
   }
 
@@ -1046,7 +1042,6 @@
       document.activeElement.blur();
     }
     setTimeout(() => {
-      window.scrollTo(0, 0);
       syncViewportState();
     }, 60);
   }
@@ -1060,14 +1055,12 @@
         }
       }
       requestAnimationFrame(() => {
-        window.scrollTo(0, 0);
         syncViewportState();
       });
     }
   });
 
   window.addEventListener('pageshow', () => {
-    window.scrollTo(0, 0);
     syncViewportState();
   });
 
