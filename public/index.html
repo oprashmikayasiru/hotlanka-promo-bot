@@ -71,16 +71,48 @@
     }
     input:focus, select:focus { border-color: var(--accent); }
 
-    /* Channel Pills */
-    .channel-chips { display: flex; flex-wrap: wrap; gap: 7px; }
-    .chip {
-      display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px;
-      border-radius: 99px; background: var(--card2); border: 1px solid var(--border);
-      font-size: 13px; font-weight: 500; cursor: pointer; transition: 0.15s;
+    /* Compact 3-Column Channel Grid */
+    .channel-chips {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
     }
-    .chip.selected { background: rgba(51, 144, 236, 0.22); border-color: var(--accent); color: #fff; }
-    .chip-dot { width: 8px; height: 8px; border-radius: 50%; background: #526375; }
-    .chip.selected .chip-dot { background: var(--accent); }
+    .chip {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      padding: 7px 6px;
+      border-radius: 10px;
+      background: var(--card2);
+      border: 1px solid var(--border);
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.15s;
+      min-width: 0;
+      text-align: center;
+    }
+    .chip span:last-child {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .chip.selected {
+      background: rgba(51, 144, 236, 0.22);
+      border-color: var(--accent);
+      color: #fff;
+    }
+    .chip-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #526375;
+      flex-shrink: 0;
+    }
+    .chip.selected .chip-dot {
+      background: var(--accent);
+    }
 
     /* ================= LIVE TELEGRAM CHANNEL POST BUBBLE ================= */
     .tg-wallpaper {
@@ -476,7 +508,7 @@
 
         <div class="tg-bubble">
           <div class="tg-channel-header">
-            <span id="bubbleChannelTitle">Channel Name</span>
+            <span id="bubbleChannelTitle">Select a Channel</span>
             <span style="font-size:11px; color:var(--muted); font-weight:500;">Channel</span>
           </div>
 
@@ -770,9 +802,6 @@
         return false;
       }
       appState = data;
-      if (selectedChannelIds.size === 0 && appState.channels.length > 0) {
-        appState.channels.forEach(c => selectedChannelIds.add(String(c.chat_id)));
-      }
       renderChannels();
       renderLiveButtons();
       renderPosts();
@@ -811,7 +840,7 @@
     listEl.innerHTML = '';
 
     if (appState.channels.length === 0) {
-      chipsEl.innerHTML = '<span style="font-size:13px; color:var(--muted);">No channels connected. Go to Channels tab.</span>';
+      chipsEl.innerHTML = '<span style="grid-column: 1 / -1; font-size:13px; color:var(--muted);">No channels connected. Go to Channels tab.</span>';
       listEl.innerHTML = '<p style="font-size:13px; color:var(--muted); text-align:center; padding:14px;">No channels yet.</p>';
       updateBubbleChannelHeader();
       return;
