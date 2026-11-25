@@ -191,22 +191,33 @@
       flex-shrink: 0;
     }
     .tb-btn:active { transform: scale(0.93); }
-    .tb-kb-btn {
-      margin-left: auto;
-      background: rgba(51, 144, 236, 0.2);
+
+    /* Floating Keyboard-Dismiss Glass Pill (Appears ONLY when keyboard is active) */
+    .floating-kb-dismiss {
+      position: fixed;
+      right: 16px;
+      bottom: 14px;
+      z-index: 95;
+      width: 42px;
+      height: 42px;
+      border-radius: 50%;
+      background: rgba(24, 36, 52, 0.88);
+      backdrop-filter: blur(20px) saturate(180%);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      border: 1px solid rgba(100, 181, 246, 0.42);
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.25),
+        0 8px 22px rgba(0, 0, 0, 0.55);
       color: #64b5f6;
-      border: 1px solid rgba(51, 144, 236, 0.4);
-      width: 30px;
-      height: 27px;
-      border-radius: 8px;
-      display: inline-flex;
+      display: flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      flex-shrink: 0;
-      animation: springSlideUp 0.16s ease;
+      transition: transform 0.16s ease, opacity 0.16s ease;
     }
-    .tb-kb-btn:active { transform: scale(0.92); }
+    .floating-kb-dismiss:active {
+      transform: scale(0.9);
+    }
 
     /* Actual Channel Message Bubble */
     .tg-bubble {
@@ -655,6 +666,25 @@
   <!-- Toast -->
   <div id="toast" class="hidden"></div>
 
+  <!-- Floating Keyboard-Dismiss Glass Pill (Appears ONLY when keyboard is active) -->
+  <button
+    id="floatingKbDismiss"
+    class="floating-kb-dismiss hidden"
+    title="Hide Keyboard"
+    onmousedown="event.preventDefault(); dismissActiveKeyboard()"
+    ontouchstart="event.preventDefault(); dismissActiveKeyboard()"
+  >
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="4" width="20" height="12" rx="2.5"/>
+      <line x1="6" y1="8" x2="6.01" y2="8"/>
+      <line x1="10" y1="8" x2="10.01" y2="8"/>
+      <line x1="14" y1="8" x2="14.01" y2="8"/>
+      <line x1="18" y1="8" x2="18.01" y2="8"/>
+      <line x1="8" y1="12" x2="16" y2="12"/>
+      <polyline points="9 19 12 22 15 19"/>
+    </svg>
+  </button>
+
   <!-- Browser PIN Lock Screen -->
   <div id="pinScreen" class="hidden">
     <div class="pin-box">
@@ -696,11 +726,6 @@
           <button class="tb-btn" onmousedown="event.preventDefault(); applySpoiler()">Spoiler</button>
           <button class="tb-btn" onmousedown="event.preventDefault(); applyQuote()">Quote</button>
           <button class="tb-btn" onmousedown="event.preventDefault(); applyLink()">Link</button>
-          <button id="editorKbDismissBtn" class="tb-kb-btn hidden" title="Hide Keyboard" onmousedown="event.preventDefault(); dismissEditorKeyboard()">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="6 9 12 15 18 9"/>
-            </svg>
-          </button>
         </div>
 
         <div class="tg-bubble">
@@ -716,8 +741,6 @@
             class="tg-editor"
             contenteditable="true"
             data-placeholder="Write your post here..."
-            onfocus="onEditorFocus()"
-            onblur="onEditorBlur()"
           ></div>
 
           <div class="tg-bubble-footer">
@@ -922,14 +945,7 @@
   <!-- Edit Published Post Modal -->
   <div id="editModal" class="modal-backdrop hidden" onclick="closeModal('editModal')">
     <div class="modal-sheet" onclick="event.stopPropagation()">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-        <h3 style="font-size:16px;">Edit Published Post</h3>
-        <button class="tb-kb-btn" title="Hide Keyboard" onmousedown="event.preventDefault(); document.getElementById('editPostEditor').blur()">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="6 9 12 15 18 9"/>
-          </svg>
-        </button>
-      </div>
+      <h3 style="margin-bottom:10px; font-size:16px;">Edit Published Post</h3>
       <div class="toolbar">
         <button class="tb-btn" onmousedown="event.preventDefault(); execEditModalFmt('bold')"><b>B</b></button>
         <button class="tb-btn" onmousedown="event.preventDefault(); execEditModalFmt('italic')"><i>I</i></button>
@@ -943,6 +959,8 @@
 <script>
   const tg = window.Telegram && window.Telegram.WebApp;
   const isTelegramApp = Boolean(tg && tg.initData && tg.initData.length > 0);
+  const tgPlatform = (tg && tg.platform) ? String(tg.platform).toLowerCase() : '';
+  const isMobileTelegram = isTelegramApp && (tgPlatform === 'ios' || tgPlatform === 'android');
 
   let authHeaders = {};
   let appState = { channels: [], posts: [], presets: [], botUsername: '' };
@@ -998,31 +1016,51 @@
     document.getElementById('scheduleClock').value = `${hh}:${min}`;
   }
 
-  // --- iOS WebKit App-Switch & Viewport Reset (Prevents Black Screen Shift) ---
+  // --- Floating Keyboard-Dismiss Pill & Viewport Tracking ---
   function syncViewportState() {
     const ae = document.activeElement;
-    const isEditing = ae && (ae.tagName === 'INPUT' || ae.tagName === 'SELECT' || ae.isContentEditable);
+    const isTextInput = ae && (
+      ae.isContentEditable ||
+      (ae.tagName === 'INPUT' && ['text', 'password', 'url', 'search', 'email', 'number'].includes(ae.type))
+    );
     const vv = window.visualViewport;
-    const kbOpen = isEditing || (vv && vv.height < window.innerHeight * 0.78);
+    const kbOpen = Boolean(isTextInput || (vv && vv.height < window.innerHeight * 0.78));
 
-    document.getElementById('bottomNavWrap').classList.toggle('kb-hidden', Boolean(kbOpen));
+    document.getElementById('bottomNavWrap').classList.toggle('kb-hidden', kbOpen);
 
-    if (ae === document.getElementById('postEditor')) {
-      document.getElementById('editorKbDismissBtn').classList.remove('hidden');
+    const kbBtn = document.getElementById('floatingKbDismiss');
+    if (kbOpen) {
+      kbBtn.classList.remove('hidden');
+      if (vv) {
+        const kbInset = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
+        kbBtn.style.bottom = `${kbInset + 14}px`;
+      } else {
+        kbBtn.style.bottom = '14px';
+      }
     } else {
-      document.getElementById('editorKbDismissBtn').classList.add('hidden');
+      kbBtn.classList.add('hidden');
+      if (window.scrollY > 0) {
+        window.scrollTo(0, 0);
+      }
     }
+  }
 
-    if (!kbOpen && window.scrollY > 0) {
-      window.scrollTo(0, 0);
+  function dismissActiveKeyboard() {
+    haptic('light');
+    if (document.activeElement && typeof document.activeElement.blur === 'function') {
+      document.activeElement.blur();
     }
+    setTimeout(() => {
+      window.scrollTo(0, 0);
+      syncViewportState();
+    }, 60);
   }
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
       if (isTelegramApp) {
         try { tg.expand(); } catch (e) {}
-        if (typeof tg.requestFullscreen === 'function') {
+        if (isMobileTelegram && typeof tg.requestFullscreen === 'function') {
           try { tg.requestFullscreen(); } catch (e) {}
         }
       }
@@ -1040,24 +1078,7 @@
 
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', syncViewportState);
-  }
-
-  function onEditorFocus() {
-    document.getElementById('editorKbDismissBtn').classList.remove('hidden');
-    document.getElementById('bottomNavWrap').classList.add('kb-hidden');
-  }
-
-  function onEditorBlur() {
-    document.getElementById('editorKbDismissBtn').classList.add('hidden');
-    setTimeout(() => {
-      window.scrollTo(0, 0);
-      syncViewportState();
-    }, 60);
-  }
-
-  function dismissEditorKeyboard() {
-    haptic('light');
-    document.getElementById('postEditor').blur();
+    window.visualViewport.addEventListener('scroll', syncViewportState);
   }
 
   document.addEventListener('focusin', syncViewportState);
@@ -1092,7 +1113,6 @@
       return;
     }
 
-    // Paste plain text cleanly without unwanted external HTML formatting
     const plain = cd.getData('text/plain');
     if (plain) {
       e.preventDefault();
@@ -1146,7 +1166,8 @@
     if (isTelegramApp) {
       tg.ready();
       tg.expand();
-      if (typeof tg.requestFullscreen === 'function') {
+      // Enable True Full-Screen ONLY on Mobile (iOS/Android), keep compact popup on Desktop
+      if (isMobileTelegram && typeof tg.requestFullscreen === 'function') {
         try { tg.requestFullscreen(); } catch (e) {}
       }
       if (typeof tg.disableVerticalSwipes === 'function') {
@@ -1238,7 +1259,6 @@
     initialLoadDone = true;
     document.getElementById('skeletonLoader').classList.add('hidden');
 
-    // Slide Native Glowing Bottom Pill Indicator
     const track = document.querySelector('.nav-indicator-track');
     const pill = document.getElementById('navGlowPill');
     const colWidth = track.offsetWidth / 3;
@@ -1448,7 +1468,7 @@
       .replace(/\n/g, '<br>');
   }
 
-  // --- Shared Media Loader (Used by both File Picker & Clipboard Paste) ---
+  // --- Shared Media Loader (File Picker & Clipboard Paste) ---
   function loadMediaFile(file) {
     if (!file) return;
     if (file.size > 4.2 * 1024 * 1024) {
