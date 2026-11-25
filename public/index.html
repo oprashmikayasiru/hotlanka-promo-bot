@@ -8,16 +8,19 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
     :root {
-      --bg: #0b0c10;
-      --card: #15171e;
-      --card2: #1e212b;
-      --border: #2a2e3b;
-      --text: #f3f4f6;
-      --muted: #9ca3af;
-      --accent: #3b82f6;
-      --accent-hover: #2563eb;
-      --danger: #ef4444;
-      --success: #10b981;
+      --bg: #0e1621;
+      --card: #17212b;
+      --card2: #202b36;
+      --bubble: #182533;
+      --tg-btn: rgba(43, 82, 120, 0.55);
+      --tg-btn-hover: rgba(43, 82, 120, 0.85);
+      --border: #242f3d;
+      --text: #f5f5f5;
+      --muted: #7f91a4;
+      --accent: #3390ec;
+      --accent-hover: #2b7cd3;
+      --danger: #e53935;
+      --success: #2ea043;
     }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -43,74 +46,208 @@
     /* Header */
     .topbar {
       position: sticky; top: 0; z-index: 40;
-      background: rgba(11, 12, 16, 0.9); backdrop-filter: blur(12px);
-      padding: 14px 16px; border-bottom: 1px solid var(--border);
+      background: rgba(23, 33, 43, 0.92); backdrop-filter: blur(12px);
+      padding: 13px 16px; border-bottom: 1px solid var(--border);
       display: flex; align-items: center; justify-content: space-between;
     }
-    .topbar h1 { font-size: 18px; font-weight: 700; }
+    .topbar h1 { font-size: 17px; font-weight: 700; }
     .mode-pill {
       font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 99px;
-      background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);
+      background: rgba(51, 144, 236, 0.15); color: #64b5f6; border: 1px solid rgba(51, 144, 236, 0.3);
     }
 
-    .container { max-width: 600px; margin: 0 auto; padding: 14px; }
+    .container { max-width: 560px; margin: 0 auto; padding: 12px; }
 
     /* Cards & Inputs */
     .card {
       background: var(--card); border: 1px solid var(--border);
-      border-radius: 16px; padding: 14px; margin-bottom: 12px;
+      border-radius: 16px; padding: 13px; margin-bottom: 12px;
     }
-    .label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; display: block; text-transform: uppercase; letter-spacing: 0.4px; }
+    .label { font-size: 11.5px; font-weight: 600; color: var(--muted); margin-bottom: 8px; display: block; text-transform: uppercase; letter-spacing: 0.4px; }
     input[type="text"], input[type="password"], input[type="url"], input[type="datetime-local"], textarea, select {
       width: 100%; background: var(--card2); border: 1px solid var(--border);
       color: var(--text); border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none;
     }
     input:focus, textarea:focus, select:focus { border-color: var(--accent); }
-    textarea { min-height: 120px; resize: vertical; line-height: 1.45; }
 
     /* Channel Pills */
-    .channel-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .channel-chips { display: flex; flex-wrap: wrap; gap: 7px; }
     .chip {
-      display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px;
+      display: inline-flex; align-items: center; gap: 7px; padding: 6px 12px;
       border-radius: 99px; background: var(--card2); border: 1px solid var(--border);
       font-size: 13px; font-weight: 500; cursor: pointer; transition: 0.15s;
     }
-    .chip.selected { background: rgba(59, 130, 246, 0.2); border-color: var(--accent); color: #fff; }
-    .chip-dot { width: 8px; height: 8px; border-radius: 50%; background: #4b5563; }
+    .chip.selected { background: rgba(51, 144, 236, 0.22); border-color: var(--accent); color: #fff; }
+    .chip-dot { width: 8px; height: 8px; border-radius: 50%; background: #526375; }
     .chip.selected .chip-dot { background: var(--accent); }
 
-    /* Toolbar */
-    .toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
-    .tb-btn {
-      background: var(--card2); border: 1px solid var(--border); color: var(--text);
-      padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;
+    /* ================= LIVE TELEGRAM CHANNEL POST BUBBLE ================= */
+    .tg-wallpaper {
+      background: radial-gradient(circle at 20% 20%, #152232 0%, #0b131d 100%);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 12px;
+      margin-bottom: 12px;
     }
-    .tb-btn:active { transform: scale(0.96); }
-    .char-count { margin-left: auto; font-size: 11px; color: var(--muted); }
 
-    /* Media Drop / Upload */
-    .media-bar { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
-    .media-preview {
-      margin-top: 10px; position: relative; border-radius: 12px; overflow: hidden;
-      border: 1px solid var(--border); background: #000; max-height: 220px; display: flex; justify-content: center;
+    /* Formatting Toolbar above bubble */
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; align-items: center;
+      background: var(--card); padding: 6px 8px; border-radius: 12px; border: 1px solid var(--border);
     }
-    .media-preview img, .media-preview video { max-height: 220px; max-width: 100%; object-fit: contain; }
+    .tb-btn {
+      background: var(--card2); border: 1px solid transparent; color: var(--text);
+      padding: 5px 9px; border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+    }
+    .tb-btn:hover { border-color: var(--accent); color: #fff; }
+    .tb-btn:active { transform: scale(0.95); }
+    .char-count { margin-left: auto; font-size: 11px; color: var(--muted); padding-right: 4px; }
+
+    /* Actual Channel Message Bubble */
+    .tg-bubble {
+      background: var(--bubble);
+      border-radius: 14px;
+      border-bottom-left-radius: 4px;
+      overflow: hidden;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .tg-channel-header {
+      padding: 9px 13px 2px 13px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #64b5f6;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* Media Area inside Bubble */
+    .bubble-media-slot {
+      position: relative;
+      background: #0a1017;
+      margin-top: 6px;
+    }
+    .bubble-media-slot img, .bubble-media-slot video {
+      width: 100%;
+      max-height: 320px;
+      object-fit: cover;
+      display: block;
+    }
     .remove-media {
       position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.75); color: #fff;
       border: none; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-weight: bold;
     }
 
-    /* Buttons Builder */
-    .btn-row-item {
-      display: flex; gap: 6px; align-items: center; background: var(--card2);
-      padding: 8px; border-radius: 10px; margin-bottom: 8px; border: 1px solid var(--border);
+    /* WYSIWYG Rich Text Area inside Bubble */
+    .tg-editor {
+      min-height: 110px;
+      padding: 8px 13px 10px 13px;
+      font-size: 14.5px;
+      line-height: 1.48;
+      color: #f5f5f5;
+      outline: none;
+      word-break: break-word;
+      white-space: pre-wrap;
     }
-    .btn-row-item .info { flex: 1; min-width: 0; }
-    .btn-row-item .b-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .btn-row-item .b-url { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .mini-badge {
-      font-size: 10px; padding: 3px 7px; border-radius: 6px; background: #2d3343; color: #cbd5e1; cursor: pointer; border: none;
+    .tg-editor:empty:before {
+      content: attr(data-placeholder);
+      color: #6c7f93;
+      pointer-events: none;
     }
+    /* Visual styles for formatted text inside editor (No raw HTML tags!) */
+    .tg-editor b, .tg-editor strong { font-weight: 700; color: #ffffff; }
+    .tg-editor i, .tg-editor em { font-style: italic; }
+    .tg-editor u { text-decoration: underline; }
+    .tg-editor s, .tg-editor strike { text-decoration: line-through; color: #9fb0c2; }
+    .tg-editor a { color: #64b5f6; text-decoration: underline; }
+    .tg-editor blockquote {
+      border-left: 3px solid #64b5f6;
+      background: rgba(100, 181, 246, 0.12);
+      padding: 4px 9px;
+      margin: 4px 0;
+      border-radius: 4px;
+      color: #dce9f5;
+    }
+    .tg-editor .tg-spoiler-span {
+      background: rgba(255, 255, 255, 0.16);
+      color: transparent;
+      text-shadow: 0 0 6px rgba(255, 255, 255, 0.85);
+      border-radius: 4px;
+      padding: 0 4px;
+    }
+    .tg-editor .tg-spoiler-span:focus, .tg-editor .tg-spoiler-span:hover {
+      color: #fff;
+      text-shadow: none;
+    }
+
+    /* Bubble Footer (Views & Time just like Telegram Channel) */
+    .tg-bubble-footer {
+      padding: 0 13px 9px 13px;
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #6c8299;
+      user-select: none;
+    }
+
+    /* Inline Buttons Attached Directly Under Bubble */
+    .tg-inline-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 5px;
+    }
+    .tg-inline-btn {
+      background: var(--tg-btn);
+      backdrop-filter: blur(6px);
+      color: #ffffff;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 9px;
+      padding: 10px 10px;
+      font-size: 13.5px;
+      font-weight: 600;
+      text-align: center;
+      cursor: pointer;
+      flex: 1 1 100%;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background 0.15s;
+    }
+    .tg-inline-btn:hover { background: var(--tg-btn-hover); }
+    .tg-inline-btn.half { flex: 1 1 47%; }
+    .tg-inline-btn .link-corner {
+      position: absolute; top: 4px; right: 6px; font-size: 9px; opacity: 0.65;
+    }
+
+    /* Quick Action Strip under Bubble */
+    .bubble-tools-bar {
+      display: flex;
+      gap: 7px;
+      margin-top: 10px;
+    }
+    .btool-btn {
+      flex: 1;
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: #d0dce8;
+      padding: 9px 8px;
+      border-radius: 10px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+    }
+    .btool-btn:hover { border-color: var(--accent); color: #fff; }
 
     /* Toggles */
     .setting-row {
@@ -118,7 +255,7 @@
       padding: 10px 0; border-bottom: 1px solid var(--border);
     }
     .setting-row:last-child { border-bottom: none; padding-bottom: 0; }
-    .setting-row span { font-size: 14px; }
+    .setting-row span { font-size: 13.5px; }
     input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
 
     /* Action Buttons */
@@ -130,8 +267,8 @@
     .btn-primary { background: var(--accent); color: #fff; }
     .btn-primary:hover { background: var(--accent-hover); }
     .btn-secondary { background: var(--card2); color: var(--text); border: 1px solid var(--border); }
-    .btn-danger { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
-    .action-grid { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 8px; margin-top: 12px; }
+    .btn-danger { background: rgba(229, 57, 53, 0.15); color: #ef5350; border: 1px solid rgba(229, 57, 53, 0.3); }
+    .action-grid { display: grid; grid-template-columns: 1fr 1.6fr; gap: 8px; margin-top: 10px; }
 
     /* Channel List Card */
     .ch-item {
@@ -141,9 +278,8 @@
     .ch-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
     .ch-avatar {
       width: 40px; height: 40px; border-radius: 50%; background: var(--accent);
-      display: flex; align-items: center; justify-content: center; font-weight: 700; flex-shrink: 0; overflow: hidden;
+      display: flex; align-items: center; justify-content: center; font-weight: 700; flex-shrink: 0;
     }
-    .ch-avatar img { width: 100%; height: 100%; object-fit: cover; }
     .ch-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .ch-sub { font-size: 12px; color: var(--muted); }
 
@@ -157,14 +293,14 @@
     .post-card {
       background: var(--card2); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 10px;
     }
-    .post-text { font-size: 13px; line-height: 1.4; margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; }
+    .post-text { font-size: 13.5px; line-height: 1.45; margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; }
     .post-meta { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; margin-bottom: 8px; }
     .post-actions { display: flex; gap: 6px; }
 
     /* Bottom Nav */
     .bottom-nav {
-      position: fixed; bottom: 0; left: 0; right: 0; height: 66px;
-      background: rgba(21, 23, 30, 0.95); backdrop-filter: blur(12px);
+      position: fixed; bottom: 0; left: 0; right: 0; height: 64px;
+      background: rgba(23, 33, 43, 0.96); backdrop-filter: blur(12px);
       border-top: 1px solid var(--border); display: flex; justify-content: space-around; align-items: center; z-index: 50;
     }
     .nav-btn {
@@ -183,20 +319,18 @@
       width: 100%; max-width: 520px; background: var(--card); border-top-left-radius: 20px; border-top-right-radius: 20px;
       padding: 20px; border-top: 1px solid var(--border); max-height: 85vh; overflow-y: auto;
     }
-    .tg-preview-bubble {
-      background: #182533; border-radius: 14px; padding: 12px; margin: 12px 0; font-size: 14px; line-height: 1.45;
+    .btn-row-item {
+      display: flex; gap: 6px; align-items: center; background: var(--card2);
+      padding: 9px; border-radius: 10px; margin-bottom: 8px; border: 1px solid var(--border);
     }
-    .tg-preview-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-    .tg-p-btn {
-      background: rgba(59, 130, 246, 0.25); color: #93c5fd; text-align: center;
-      padding: 8px; border-radius: 8px; font-size: 13px; font-weight: 600; flex: 1 1 100%;
+    .mini-badge {
+      font-size: 11px; padding: 4px 8px; border-radius: 6px; background: #2b3948; color: #dce9f5; cursor: pointer; border: none;
     }
-    .tg-p-btn.half { flex: 1 1 46%; }
 
     /* Toast */
     #toast {
       position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
-      background: #1f2937; color: #fff; padding: 10px 18px; border-radius: 99px;
+      background: #23303e; color: #fff; padding: 10px 18px; border-radius: 99px;
       font-size: 13px; font-weight: 600; z-index: 200; border: 1px solid var(--border);
       box-shadow: 0 8px 24px rgba(0,0,0,0.5);
     }
@@ -224,45 +358,59 @@
       <span id="modeBadge" class="mode-pill">Telegram App</span>
     </div>
 
-    <!-- TAB 1: CREATE POST -->
+    <!-- TAB 1: CREATE POST (LIVE CHANNEL BUBBLE UI) -->
     <div id="tabCreate" class="container">
       <div class="card">
-        <span class="label">Select Channels</span>
+        <span class="label">Post To</span>
         <div id="createChannelChips" class="channel-chips"></div>
       </div>
 
-      <div class="card">
-        <span class="label">Post Content</span>
-        <textarea id="postText" placeholder="Write your post..." oninput="updateCharCount()"></textarea>
+      <!-- Live Telegram Channel Post Preview & Direct Editor -->
+      <div class="tg-wallpaper">
         <div class="toolbar">
-          <button class="tb-btn" onclick="wrapTag('b')"><b>B</b></button>
-          <button class="tb-btn" onclick="wrapTag('i')"><i>I</i></button>
-          <button class="tb-btn" onclick="wrapTag('u')"><u>U</u></button>
-          <button class="tb-btn" onclick="wrapTag('tg-spoiler')">Spoiler</button>
-          <button class="tb-btn" onclick="wrapTag('blockquote')">Quote</button>
-          <button class="tb-btn" onclick="insertLink()">Link</button>
+          <button class="tb-btn" onmousedown="event.preventDefault(); execFmt('bold')" title="Bold"><b>B</b></button>
+          <button class="tb-btn" onmousedown="event.preventDefault(); execFmt('italic')" title="Italic"><i>I</i></button>
+          <button class="tb-btn" onmousedown="event.preventDefault(); execFmt('underline')" title="Underline"><u>U</u></button>
+          <button class="tb-btn" onmousedown="event.preventDefault(); execFmt('strikeThrough')" title="Strike"><s>S</s></button>
+          <button class="tb-btn" onmousedown="event.preventDefault(); applySpoiler()">Spoiler</button>
+          <button class="tb-btn" onmousedown="event.preventDefault(); applyQuote()">Quote</button>
+          <button class="tb-btn" onmousedown="event.preventDefault(); applyLink()">Link</button>
           <span id="charCount" class="char-count">0 / 4096</span>
         </div>
 
-        <div class="media-bar">
-          <input type="file" id="mediaInput" accept="image/*,video/*" class="hidden" onchange="handleMediaSelect(event)" />
-          <button class="btn btn-secondary" style="flex:1; padding: 9px;" onclick="document.getElementById('mediaInput').click()">
-            📎 Attach Photo / Video
-          </button>
-        </div>
-        <div id="mediaPreviewWrap" class="media-preview hidden"></div>
-      </div>
+        <!-- Actual Channel Post Card -->
+        <div class="tg-bubble">
+          <div class="tg-channel-header">
+            <span id="bubbleChannelTitle">Channel Name</span>
+            <span style="font-size:11px; color:var(--muted); font-weight:500;">Live Post</span>
+          </div>
 
-      <!-- URL Buttons Builder -->
-      <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-          <span class="label" style="margin:0;">Buttons</span>
-          <div style="display:flex; gap:6px;">
-            <button class="mini-badge" onclick="openPresetModal()">Presets</button>
-            <button class="mini-badge" style="background:var(--accent); color:#fff;" onclick="openAddBtnModal()">+ Add Button</button>
+          <div id="mediaPreviewWrap" class="bubble-media-slot hidden"></div>
+
+          <div
+            id="postEditor"
+            class="tg-editor"
+            contenteditable="true"
+            data-placeholder="Write your post here..."
+            oninput="updateCharCount()"
+          ></div>
+
+          <div class="tg-bubble-footer">
+            <span>👁 1.2K</span>
+            <span id="bubbleClock">12:00</span>
           </div>
         </div>
-        <div id="buttonsList"></div>
+
+        <!-- Inline Buttons Rendered Directly Under Bubble -->
+        <div id="liveButtonsGrid" class="tg-inline-grid"></div>
+
+        <!-- Attach Media / Add Button / Presets Strip -->
+        <div class="bubble-tools-bar">
+          <input type="file" id="mediaInput" accept="image/*,video/*" class="hidden" onchange="handleMediaSelect(event)" />
+          <button class="btool-btn" onclick="document.getElementById('mediaInput').click()">📎 Media</button>
+          <button class="btool-btn" onclick="openBtnModal(-1)">➕ Add Button</button>
+          <button class="btool-btn" onclick="openPresetModal()">⭐ Presets</button>
+        </div>
       </div>
 
       <!-- Publish Settings -->
@@ -304,8 +452,7 @@
       </div>
 
       <div class="action-grid">
-        <button class="btn btn-secondary" onclick="openPreviewModal()">Preview</button>
-        <button class="btn btn-secondary" onclick="savePost('draft')">Save Draft</button>
+        <button class="btn btn-secondary" onclick="savePost()">Save Draft</button>
         <button id="publishBtn" class="btn btn-primary" onclick="publishPost()">Publish</button>
       </div>
     </div>
@@ -313,7 +460,6 @@
     <!-- TAB 2: CHANNELS -->
     <div id="tabChannels" class="container hidden">
       <div class="card">
-        <!-- Telegram Native Picker Button (Shown ONLY in Telegram App) -->
         <div id="tgNativePickerWrap" class="hidden">
           <button class="btn btn-primary" style="width:100%;" onclick="pickChannelFromTelegram()">
             + Select Channel from Telegram
@@ -323,7 +469,6 @@
           </p>
         </div>
 
-        <!-- Web Browser Manual Add (Shown ONLY in Browser) -->
         <div id="webChannelAddWrap" class="hidden">
           <span class="label">Add Channel (@username or ID)</span>
           <div style="display:flex; gap:8px;">
@@ -369,10 +514,10 @@
     </div>
   </div>
 
-  <!-- Add Button Modal -->
+  <!-- Add / Edit Button Modal -->
   <div id="btnModal" class="modal-backdrop hidden" onclick="closeModal('btnModal')">
     <div class="modal-sheet" onclick="event.stopPropagation()">
-      <h3 style="margin-bottom:12px; font-size:16px;">Add Button</h3>
+      <h3 id="btnModalTitle" style="margin-bottom:12px; font-size:16px;">Add Button</h3>
       <span class="label">Button Text</span>
       <input type="text" id="btnLabelInput" placeholder="e.g. ⭐️ Telegram Stars" style="margin-bottom:10px;" />
       <span class="label">Link URL</span>
@@ -383,8 +528,9 @@
         <option value="half">Side by Side (Half Width)</option>
       </select>
       <div style="display:flex; gap:8px;">
+        <button id="btnDeleteModalBtn" class="btn btn-danger hidden" onclick="deleteEditingButton()">Delete</button>
         <button class="btn btn-secondary" style="flex:1;" onclick="saveAsPreset()">Save Preset</button>
-        <button class="btn btn-primary" style="flex:1;" onclick="confirmAddButton()">Add to Post</button>
+        <button class="btn btn-primary" style="flex:1;" onclick="confirmAddOrEditButton()">Done</button>
       </div>
     </div>
   </div>
@@ -397,24 +543,16 @@
     </div>
   </div>
 
-  <!-- Preview Modal -->
-  <div id="previewModal" class="modal-backdrop hidden" onclick="closeModal('previewModal')">
-    <div class="modal-sheet" onclick="event.stopPropagation()">
-      <h3 style="margin-bottom:6px; font-size:16px;">Post Preview</h3>
-      <div class="tg-preview-bubble">
-        <div id="previewMediaSlot"></div>
-        <div id="previewTextSlot"></div>
-        <div id="previewBtnsSlot" class="tg-preview-btns"></div>
-      </div>
-      <button class="btn btn-primary" style="width:100%;" onclick="closeModal('previewModal')">Close</button>
-    </div>
-  </div>
-
-  <!-- Edit Published Post Modal -->
+  <!-- Edit Published Post Modal (WYSIWYG) -->
   <div id="editModal" class="modal-backdrop hidden" onclick="closeModal('editModal')">
     <div class="modal-sheet" onclick="event.stopPropagation()">
-      <h3 style="margin-bottom:12px; font-size:16px;">Edit Post</h3>
-      <textarea id="editPostText" style="margin-bottom:12px;"></textarea>
+      <h3 style="margin-bottom:10px; font-size:16px;">Edit Published Post</h3>
+      <div class="toolbar">
+        <button class="tb-btn" onmousedown="event.preventDefault(); execEditModalFmt('bold')"><b>B</b></button>
+        <button class="tb-btn" onmousedown="event.preventDefault(); execEditModalFmt('italic')"><i>I</i></button>
+        <button class="tb-btn" onmousedown="event.preventDefault(); execEditModalFmt('underline')"><u>U</u></button>
+      </div>
+      <div id="editPostEditor" class="tg-editor" contenteditable="true" style="background:var(--bubble); border-radius:12px; margin-bottom:12px; border:1px solid var(--border);"></div>
       <button class="btn btn-primary" style="width:100%;" onclick="submitEditPost()">Save Changes</button>
     </div>
   </div>
@@ -427,7 +565,8 @@
   let appState = { channels: [], posts: [], presets: [], botUsername: '' };
   let selectedChannelIds = new Set();
   let postButtons = [];
-  let attachedMedia = null; // { dataUrl, type, name }
+  let editingBtnIndex = -1;
+  let attachedMedia = null;
   let currentPostFilter = 'published';
   let editingPostId = null;
 
@@ -437,6 +576,15 @@
     t.classList.remove('hidden');
     setTimeout(() => t.classList.add('hidden'), 2600);
   }
+
+  function updateClock() {
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    document.getElementById('bubbleClock').textContent = `${hh}:${mm}`;
+  }
+  updateClock();
+  setInterval(updateClock, 30000);
 
   async function initApp() {
     if (isTelegramApp) {
@@ -498,7 +646,7 @@
         appState.channels.forEach(c => selectedChannelIds.add(String(c.chat_id)));
       }
       renderChannels();
-      renderButtons();
+      renderLiveButtons();
       renderPosts();
       return true;
     } catch (e) {
@@ -515,7 +663,19 @@
     if (tabName === 'Posts') loadState(true);
   }
 
-  // --- Channels ---
+  // --- Channels & Bubble Header Sync ---
+  function updateBubbleChannelHeader() {
+    const selected = appState.channels.filter(c => selectedChannelIds.has(String(c.chat_id)));
+    const titleEl = document.getElementById('bubbleChannelTitle');
+    if (selected.length === 0) {
+      titleEl.textContent = 'Select a Channel';
+    } else if (selected.length === 1) {
+      titleEl.textContent = selected[0].title;
+    } else {
+      titleEl.textContent = `${selected[0].title} +${selected.length - 1} more`;
+    }
+  }
+
   function renderChannels() {
     const chipsEl = document.getElementById('createChannelChips');
     const listEl = document.getElementById('channelsList');
@@ -525,6 +685,7 @@
     if (appState.channels.length === 0) {
       chipsEl.innerHTML = '<span style="font-size:13px; color:var(--muted);">No channels connected. Go to Channels tab.</span>';
       listEl.innerHTML = '<p style="font-size:13px; color:var(--muted); text-align:center; padding:14px;">No channels yet.</p>';
+      updateBubbleChannelHeader();
       return;
     }
 
@@ -557,10 +718,11 @@
       `;
       listEl.appendChild(item);
     });
+
+    updateBubbleChannelHeader();
   }
 
   async function pickChannelFromTelegram() {
-    // Opens bot chat with native request_chat keyboard so Telegram shows the native channel picker
     const botUser = appState.botUsername;
     if (botUser && tg) {
       tg.openTelegramLink(`https://t.me/${botUser}?start=pickchannel`);
@@ -592,36 +754,102 @@
     }
   }
 
-  // --- Text Formatting & Media ---
-  function updateCharCount() {
-    const len = document.getElementById('postText').value.length;
-    const max = attachedMedia ? 1024 : 4096;
-    document.getElementById('charCount').textContent = `${len} / ${max}`;
-  }
-
-  function wrapTag(tag) {
-    const ta = document.getElementById('postText');
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const sel = ta.value.substring(start, end) || 'text';
-    const replacement = `<${tag}>${sel}</${tag}>`;
-    ta.setRangeText(replacement, start, end, 'select');
-    ta.focus();
+  // --- WYSIWYG Rich Text Formatting (Zero Raw HTML Tags Visible!) ---
+  function execFmt(cmd) {
+    const ed = document.getElementById('postEditor');
+    ed.focus();
+    document.execCommand(cmd, false, null);
     updateCharCount();
   }
 
-  function insertLink() {
+  function execEditModalFmt(cmd) {
+    const ed = document.getElementById('editPostEditor');
+    ed.focus();
+    document.execCommand(cmd, false, null);
+  }
+
+  function applySpoiler() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount || sel.isCollapsed) {
+      showToast('Select text first');
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    const span = document.createElement('span');
+    span.className = 'tg-spoiler-span';
+    span.appendChild(range.extractContents());
+    range.insertNode(span);
+    sel.removeAllRanges();
+    updateCharCount();
+  }
+
+  function applyQuote() {
+    const ed = document.getElementById('postEditor');
+    ed.focus();
+    document.execCommand('formatBlock', false, 'blockquote');
+    updateCharCount();
+  }
+
+  function applyLink() {
+    const sel = window.getSelection();
+    if (!sel.rangeCount || sel.isCollapsed) {
+      showToast('Select text first');
+      return;
+    }
     const url = prompt('Enter URL (https://...):');
-    if (!url) return;
-    const ta = document.getElementById('postText');
-    const start = ta.selectionStart;
-    const end = ta.selectionEnd;
-    const sel = ta.value.substring(start, end) || 'Click Here';
-    ta.setRangeText(`<a href="${url}">${sel}</a>`, start, end, 'select');
-    ta.focus();
+    if (!url || !url.startsWith('http')) return;
+    document.execCommand('createLink', false, url);
     updateCharCount();
   }
 
+  function serializeEditorToTelegramHtml(editorEl) {
+    function walk(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return escapeHtml(node.textContent);
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+      const tag = node.tagName.toLowerCase();
+      let inner = '';
+      node.childNodes.forEach(child => { inner += walk(child); });
+
+      if (tag === 'br') return '\n';
+      if (tag === 'div' || tag === 'p') return (inner ? '\n' + inner : '\n');
+      if (tag === 'b' || tag === 'strong') return `<b>${inner}</b>`;
+      if (tag === 'i' || tag === 'em') return `<i>${inner}</i>`;
+      if (tag === 'u') return `<u>${inner}</u>`;
+      if (tag === 's' || tag === 'strike' || tag === 'del') return `<s>${inner}</s>`;
+      if (tag === 'blockquote') return `<blockquote>${inner}</blockquote>`;
+      if (tag === 'a') {
+        const href = node.getAttribute('href') || '';
+        return `<a href="${escapeAttr(href)}">${inner}</a>`;
+      }
+      if (tag === 'span' && node.classList.contains('tg-spoiler-span')) {
+        return `<tg-spoiler>${inner}</tg-spoiler>`;
+      }
+      return inner;
+    }
+
+    let out = '';
+    editorEl.childNodes.forEach(c => { out += walk(c); });
+    return out.replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function telegramHtmlToEditorHtml(tgHtml) {
+    if (!tgHtml) return '';
+    return tgHtml
+      .replace(/<tg-spoiler>/g, '<span class="tg-spoiler-span">')
+      .replace(/<\/tg-spoiler>/g, '</span>')
+      .replace(/\n/g, '<br>');
+  }
+
+  function updateCharCount() {
+    const plainLen = document.getElementById('postEditor').innerText.trim().length;
+    const max = attachedMedia ? 1024 : 4096;
+    document.getElementById('charCount').textContent = `${plainLen} / ${max}`;
+  }
+
+  // --- Media Attachment Inside Bubble ---
   function handleMediaSelect(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -656,36 +884,41 @@
     updateCharCount();
   }
 
-  // --- Buttons Builder ---
-  function renderButtons() {
-    const el = document.getElementById('buttonsList');
-    if (postButtons.length === 0) {
-      el.innerHTML = '<p style="font-size:12px; color:var(--muted);">No buttons added.</p>';
-      return;
-    }
-    el.innerHTML = '';
+  // --- Live Inline Buttons Under Channel Bubble ---
+  function renderLiveButtons() {
+    const grid = document.getElementById('liveButtonsGrid');
+    grid.innerHTML = '';
     postButtons.forEach((b, idx) => {
-      const row = document.createElement('div');
-      row.className = 'btn-row-item';
-      row.innerHTML = `
-        <div class="info">
-          <div class="b-title">${escapeHtml(b.text)}</div>
-          <div class="b-url">${escapeHtml(b.url)}</div>
-        </div>
-        <button class="mini-badge" onclick="toggleBtnLayout(${idx})">${b.layout === 'half' ? 'Half' : 'Full'}</button>
-        <button class="mini-badge" style="color:#f87171;" onclick="removeBtn(${idx})">✕</button>
-      `;
-      el.appendChild(row);
+      const btn = document.createElement('div');
+      btn.className = 'tg-inline-btn' + (b.layout === 'half' ? ' half' : '');
+      btn.title = 'Tap to edit or remove button';
+      btn.innerHTML = `<span>${escapeHtml(b.text)}</span><span class="link-corner">↗</span>`;
+      btn.onclick = () => openBtnModal(idx);
+      grid.appendChild(btn);
     });
   }
 
-  function openAddBtnModal() {
-    document.getElementById('btnLabelInput').value = '';
-    document.getElementById('btnUrlInput').value = '';
+  function openBtnModal(index = -1) {
+    editingBtnIndex = index;
+    const delBtn = document.getElementById('btnDeleteModalBtn');
+    if (index >= 0 && postButtons[index]) {
+      const b = postButtons[index];
+      document.getElementById('btnModalTitle').textContent = 'Edit Button';
+      document.getElementById('btnLabelInput').value = b.text;
+      document.getElementById('btnUrlInput').value = b.url;
+      document.getElementById('btnLayoutInput').value = b.layout || 'full';
+      delBtn.classList.remove('hidden');
+    } else {
+      document.getElementById('btnModalTitle').textContent = 'Add Button';
+      document.getElementById('btnLabelInput').value = '';
+      document.getElementById('btnUrlInput').value = '';
+      document.getElementById('btnLayoutInput').value = 'full';
+      delBtn.classList.add('hidden');
+    }
     document.getElementById('btnModal').classList.remove('hidden');
   }
 
-  function confirmAddButton() {
+  function confirmAddOrEditButton() {
     const text = document.getElementById('btnLabelInput').value.trim();
     const url = document.getElementById('btnUrlInput').value.trim();
     const layout = document.getElementById('btnLayoutInput').value;
@@ -693,8 +926,20 @@
       showToast('Enter valid text and https:// link');
       return;
     }
-    postButtons.push({ text, url, layout });
-    renderButtons();
+    if (editingBtnIndex >= 0) {
+      postButtons[editingBtnIndex] = { text, url, layout };
+    } else {
+      postButtons.push({ text, url, layout });
+    }
+    renderLiveButtons();
+    closeModal('btnModal');
+  }
+
+  function deleteEditingButton() {
+    if (editingBtnIndex >= 0) {
+      postButtons.splice(editingBtnIndex, 1);
+      renderLiveButtons();
+    }
     closeModal('btnModal');
   }
 
@@ -723,12 +968,12 @@
         const div = document.createElement('div');
         div.className = 'btn-row-item';
         div.innerHTML = `
-          <div class="info">
-            <div class="b-title">${escapeHtml(p.text)}</div>
-            <div class="b-url">${escapeHtml(p.url)}</div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:13px; font-weight:600;">${escapeHtml(p.text)}</div>
+            <div style="font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(p.url)}</div>
           </div>
           <button class="mini-badge" style="background:var(--accent); color:#fff;" onclick="usePreset('${escapeAttr(p.text)}','${escapeAttr(p.url)}','${p.layout || 'full'}')">Use</button>
-          <button class="mini-badge" style="color:#f87171;" onclick="deletePreset('${p._id}')">✕</button>
+          <button class="mini-badge" style="color:#ef5350;" onclick="deletePreset('${p._id}')">✕</button>
         `;
         el.appendChild(div);
       });
@@ -738,7 +983,7 @@
 
   function usePreset(text, url, layout) {
     postButtons.push({ text, url, layout });
-    renderButtons();
+    renderLiveButtons();
     closeModal('presetModal');
   }
 
@@ -748,41 +993,10 @@
     openPresetModal();
   }
 
-  function toggleBtnLayout(idx) {
-    postButtons[idx].layout = postButtons[idx].layout === 'half' ? 'full' : 'half';
-    renderButtons();
-  }
-
-  function removeBtn(idx) {
-    postButtons.splice(idx, 1);
-    renderButtons();
-  }
-
   function toggleScheduleInput() {
     const isSched = document.getElementById('publishMode').value === 'schedule';
     document.getElementById('scheduleRow').classList.toggle('hidden', !isSched);
     document.getElementById('publishBtn').textContent = isSched ? 'Schedule' : 'Publish';
-  }
-
-  function openPreviewModal() {
-    const text = document.getElementById('postText').value;
-    const mediaSlot = document.getElementById('previewMediaSlot');
-    mediaSlot.innerHTML = '';
-    if (attachedMedia) {
-      mediaSlot.innerHTML = attachedMedia.type === 'video'
-        ? `<video src="${attachedMedia.dataUrl}" style="width:100%; border-radius:8px; margin-bottom:8px;" controls></video>`
-        : `<img src="${attachedMedia.dataUrl}" style="width:100%; border-radius:8px; margin-bottom:8px;" />`;
-    }
-    document.getElementById('previewTextSlot').innerHTML = text.replace(/\n/g, '<br>') || '<i style="color:var(--muted)">Empty text</i>';
-    const btnsSlot = document.getElementById('previewBtnsSlot');
-    btnsSlot.innerHTML = '';
-    postButtons.forEach(b => {
-      const div = document.createElement('div');
-      div.className = 'tg-p-btn' + (b.layout === 'half' ? ' half' : '');
-      div.textContent = b.text;
-      btnsSlot.appendChild(div);
-    });
-    document.getElementById('previewModal').classList.remove('hidden');
   }
 
   function closeModal(id) {
@@ -790,9 +1004,10 @@
   }
 
   function collectPostPayload() {
+    const htmlText = serializeEditorToTelegramHtml(document.getElementById('postEditor'));
     return {
       channel_ids: Array.from(selectedChannelIds),
-      text: document.getElementById('postText').value,
+      text: htmlText,
       media: attachedMedia,
       buttons: postButtons,
       publish_mode: document.getElementById('publishMode').value,
@@ -804,7 +1019,7 @@
     };
   }
 
-  async function savePost(status) {
+  async function savePost() {
     const payload = collectPostPayload();
     if (!payload.text.trim() && !payload.media) {
       showToast('Write text or attach media first');
@@ -844,10 +1059,10 @@
 
     if (res.ok) {
       showToast(payload.publish_mode === 'schedule' ? 'Post scheduled!' : 'Published!');
-      document.getElementById('postText').value = '';
+      document.getElementById('postEditor').innerHTML = '';
       postButtons = [];
       clearMedia();
-      renderButtons();
+      renderLiveButtons();
       updateCharCount();
       await loadState(true);
     } else {
@@ -890,7 +1105,7 @@
         `;
       } else {
         actionsHtml = `
-          <button class="btn btn-secondary" style="padding:6px 12px; font-size:12px;" onclick="openEditPublished('${p._id}')">Edit Text</button>
+          <button class="btn btn-secondary" style="padding:6px 12px; font-size:12px;" onclick="openEditPublished('${p._id}')">Edit</button>
           <button class="btn btn-secondary" style="padding:6px 12px; font-size:12px;" onclick="loadDraftToEditor('${p._id}')">Repost</button>
           <button class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="deletePostRecord('${p._id}', true)">Delete</button>
         `;
@@ -901,7 +1116,7 @@
           <span>📢 ${escapeHtml(chNames)}</span>
           <span>${escapeHtml(dateLabel)}</span>
         </div>
-        <div class="post-text">${escapeHtml(p.text || '[Media Post]')}</div>
+        <div class="post-text">${telegramHtmlToEditorHtml(p.text) || '[Media Post]'}</div>
         <div class="post-actions">${actionsHtml}</div>
       `;
       el.appendChild(card);
@@ -911,9 +1126,9 @@
   function loadDraftToEditor(id) {
     const p = appState.posts.find(x => x._id === id);
     if (!p) return;
-    document.getElementById('postText').value = p.text || '';
+    document.getElementById('postEditor').innerHTML = telegramHtmlToEditorHtml(p.text || '');
     postButtons = Array.isArray(p.buttons) ? JSON.parse(JSON.stringify(p.buttons)) : [];
-    renderButtons();
+    renderLiveButtons();
     updateCharCount();
     switchTab('Create');
     showToast('Loaded into editor');
@@ -923,14 +1138,14 @@
     const p = appState.posts.find(x => x._id === id);
     if (!p) return;
     editingPostId = id;
-    document.getElementById('editPostText').value = p.text || '';
+    document.getElementById('editPostEditor').innerHTML = telegramHtmlToEditorHtml(p.text || '');
     document.getElementById('editModal').classList.remove('hidden');
   }
 
   async function submitEditPost() {
     if (!editingPostId) return;
-    const newText = document.getElementById('editPostText').value;
-    const res = await apiCall('edit_published', { id: editingPostId, text: newText });
+    const newHtml = serializeEditorToTelegramHtml(document.getElementById('editPostEditor'));
+    const res = await apiCall('edit_published', { id: editingPostId, text: newHtml });
     closeModal('editModal');
     if (res.ok) {
       showToast('Post updated on Telegram');
@@ -954,7 +1169,7 @@
     return String(str || '').replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
   }
   function escapeAttr(str) {
-    return String(str || '').replace(/'/g, "\\'");
+    return String(str || '').replace(/"/g, '&quot;').replace(/'/g, "\\'");
   }
 
   initApp();
