@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Post Studio</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    :root {
+      --bg: #0b0c10;
+      --card: #15171e;
+      --card2: #1e212b;
+      --border: #2a2e3b;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --danger: #ef4444;
+      --success: #10b981;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding-bottom: 84px;
+    }
+    .hidden { display: none !important; }
+
+    /* PIN Lock Screen (Browser Only) */
+    #pinScreen {
+      position: fixed; inset: 0; background: var(--bg); z-index: 999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px;
+    }
+    .pin-box {
+      width: 100%; max-width: 340px; background: var(--card); border: 1px solid var(--border);
+      border-radius: 18px; padding: 24px; text-align: center;
+    }
+    .pin-box h2 { font-size: 20px; margin-bottom: 6px; }
+    .pin-box p { font-size: 13px; color: var(--muted); margin-bottom: 18px; }
+
+    /* Header */
+    .topbar {
+      position: sticky; top: 0; z-index: 40;
+      background: rgba(11, 12, 16, 0.9); backdrop-filter: blur(12px);
+      padding: 14px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .topbar h1 { font-size: 18px; font-weight: 700; }
+    .mode-pill {
+      font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 99px;
+      background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3);
+    }
+
+    .container { max-width: 600px; margin: 0 auto; padding: 14px; }
+
+    /* Cards & Inputs */
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 16px; padding: 14px; margin-bottom: 12px;
+    }
+    .label { font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 8px; display: block; text-transform: uppercase; letter-spacing: 0.4px; }
+    input[type="text"], input[type="password"], input[type="url"], input[type="datetime-local"], textarea, select {
+      width: 100%; background: var(--card2); border: 1px solid var(--border);
+      color: var(--text); border-radius: 10px; padding: 10px 12px; font-size: 14px; outline: none;
+    }
+    input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+    textarea { min-height: 120px; resize: vertical; line-height: 1.45; }
+
+    /* Channel Pills */
+    .channel-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px;
+      border-radius: 99px; background: var(--card2); border: 1px solid var(--border);
+      font-size: 13px; font-weight: 500; cursor: pointer; transition: 0.15s;
+    }
+    .chip.selected { background: rgba(59, 130, 246, 0.2); border-color: var(--accent); color: #fff; }
+    .chip-dot { width: 8px; height: 8px; border-radius: 50%; background: #4b5563; }
+    .chip.selected .chip-dot { background: var(--accent); }
+
+    /* Toolbar */
+    .toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+    .tb-btn {
+      background: var(--card2); border: 1px solid var(--border); color: var(--text);
+      padding: 6px 10px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer;
+    }
+    .tb-btn:active { transform: scale(0.96); }
+    .char-count { margin-left: auto; font-size: 11px; color: var(--muted); }
+
+    /* Media Drop / Upload */
+    .media-bar { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+    .media-preview {
+      margin-top: 10px; position: relative; border-radius: 12px; overflow: hidden;
+      border: 1px solid var(--border); background: #000; max-height: 220px; display: flex; justify-content: center;
+    }
+    .media-preview img, .media-preview video { max-height: 220px; max-width: 100%; object-fit: contain; }
+    .remove-media {
+      position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.75); color: #fff;
+      border: none; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; font-weight: bold;
+    }
+
+    /* Buttons Builder */
+    .btn-row-item {
+      display: flex; gap: 6px; align-items: center; background: var(--card2);
+      padding: 8px; border-radius: 10px; margin-bottom: 8px; border: 1px solid var(--border);
+    }
+    .btn-row-item .info { flex: 1; min-width: 0; }
+    .btn-row-item .b-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .btn-row-item .b-url { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .mini-badge {
+      font-size: 10px; padding: 3px 7px; border-radius: 6px; background: #2d3343; color: #cbd5e1; cursor: pointer; border: none;
+    }
+
+    /* Toggles */
+    .setting-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+    }
+    .setting-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .setting-row span { font-size: 14px; }
+    input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); cursor: pointer; }
+
+    /* Action Buttons */
+    .btn {
+      border: none; border-radius: 12px; padding: 12px 16px; font-size: 14px; font-weight: 600;
+      cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; transition: 0.15s;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { background: var(--card2); color: var(--text); border: 1px solid var(--border); }
+    .btn-danger { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+    .action-grid { display: grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 8px; margin-top: 12px; }
+
+    /* Channel List Card */
+    .ch-item {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 12px; background: var(--card2); border-radius: 12px; margin-bottom: 8px; border: 1px solid var(--border);
+    }
+    .ch-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .ch-avatar {
+      width: 40px; height: 40px; border-radius: 50%; background: var(--accent);
+      display: flex; align-items: center; justify-content: center; font-weight: 700; flex-shrink: 0; overflow: hidden;
+    }
+    .ch-avatar img { width: 100%; height: 100%; object-fit: cover; }
+    .ch-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .ch-sub { font-size: 12px; color: var(--muted); }
+
+    /* Posts Tabs */
+    .sub-tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; background: var(--card2); padding: 4px; border-radius: 12px; margin-bottom: 12px; }
+    .sub-tab {
+      padding: 8px; text-align: center; font-size: 13px; font-weight: 600; border-radius: 9px;
+      cursor: pointer; color: var(--muted); border: none; background: transparent;
+    }
+    .sub-tab.active { background: var(--accent); color: #fff; }
+    .post-card {
+      background: var(--card2); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 10px;
+    }
+    .post-text { font-size: 13px; line-height: 1.4; margin-bottom: 8px; white-space: pre-wrap; word-break: break-word; }
+    .post-meta { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; margin-bottom: 8px; }
+    .post-actions { display: flex; gap: 6px; }
+
+    /* Bottom Nav */
+    .bottom-nav {
+      position: fixed; bottom: 0; left: 0; right: 0; height: 66px;
+      background: rgba(21, 23, 30, 0.95); backdrop-filter: blur(12px);
+      border-top: 1px solid var(--border); display: flex; justify-content: space-around; align-items: center; z-index: 50;
+    }
+    .nav-btn {
+      background: none; border: none; color: var(--muted); display: flex; flex-direction: column;
+      align-items: center; gap: 3px; font-size: 11px; font-weight: 600; cursor: pointer; padding: 6px 18px;
+    }
+    .nav-btn.active { color: var(--accent); }
+    .nav-icon { font-size: 19px; }
+
+    /* Modal */
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 100;
+      display: flex; align-items: flex-end; justify-content: center;
+    }
+    .modal-sheet {
+      width: 100%; max-width: 520px; background: var(--card); border-top-left-radius: 20px; border-top-right-radius: 20px;
+      padding: 20px; border-top: 1px solid var(--border); max-height: 85vh; overflow-y: auto;
+    }
+    .tg-preview-bubble {
+      background: #182533; border-radius: 14px; padding: 12px; margin: 12px 0; font-size: 14px; line-height: 1.45;
+    }
+    .tg-preview-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .tg-p-btn {
+      background: rgba(59, 130, 246, 0.25); color: #93c5fd; text-align: center;
+      padding: 8px; border-radius: 8px; font-size: 13px; font-weight: 600; flex: 1 1 100%;
+    }
+    .tg-p-btn.half { flex: 1 1 46%; }
+
+    /* Toast */
+    #toast {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      background: #1f2937; color: #fff; padding: 10px 18px; border-radius: 99px;
+      font-size: 13px; font-weight: 600; z-index: 200; border: 1px solid var(--border);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Toast -->
+  <div id="toast" class="hidden"></div>
+
+  <!-- Browser PIN Lock Screen (Hidden inside Telegram Mini App) -->
+  <div id="pinScreen" class="hidden">
+    <div class="pin-box">
+      <h2>Post Studio</h2>
+      <p>Enter Admin PIN to unlock web access</p>
+      <input type="password" id="pinInput" placeholder="Admin PIN" style="margin-bottom: 12px; text-align: center; font-size: 18px; letter-spacing: 4px;" />
+      <button class="btn btn-primary" style="width: 100%;" onclick="submitPin()">Unlock</button>
+    </div>
+  </div>
+
+  <!-- Main App -->
+  <div id="appRoot" class="hidden">
+    <div class="topbar">
+      <h1>Post Studio</h1>
+      <span id="modeBadge" class="mode-pill">Telegram App</span>
+    </div>
+
+    <!-- TAB 1: CREATE POST -->
+    <div id="tabCreate" class="container">
+      <div class="card">
+        <span class="label">Select Channels</span>
+        <div id="createChannelChips" class="channel-chips"></div>
+      </div>
+
+      <div class="card">
+        <span class="label">Post Content</span>
+        <textarea id="postText" placeholder="Write your post..." oninput="updateCharCount()"></textarea>
+        <div class="toolbar">
+          <button class="tb-btn" onclick="wrapTag('b')"><b>B</b></button>
+          <button class="tb-btn" onclick="wrapTag('i')"><i>I</i></button>
+          <button class="tb-btn" onclick="wrapTag('u')"><u>U</u></button>
+          <button class="tb-btn" onclick="wrapTag('tg-spoiler')">Spoiler</button>
+          <button class="tb-btn" onclick="wrapTag('blockquote')">Quote</button>
+          <button class="tb-btn" onclick="insertLink()">Link</button>
+          <span id="charCount" class="char-count">0 / 4096</span>
+        </div>
+
+        <div class="media-bar">
+          <input type="file" id="mediaInput" accept="image/*,video/*" class="hidden" onchange="handleMediaSelect(event)" />
+          <button class="btn btn-secondary" style="flex:1; padding: 9px;" onclick="document.getElementById('mediaInput').click()">
+            📎 Attach Photo / Video
+          </button>
+        </div>
+        <div id="mediaPreviewWrap" class="media-preview hidden"></div>
+      </div>
+
+      <!-- URL Buttons Builder -->
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span class="label" style="margin:0;">Buttons</span>
+          <div style="display:flex; gap:6px;">
+            <button class="mini-badge" onclick="openPresetModal()">Presets</button>
+            <button class="mini-badge" style="background:var(--accent); color:#fff;" onclick="openAddBtnModal()">+ Add Button</button>
+          </div>
+        </div>
+        <div id="buttonsList"></div>
+      </div>
+
+      <!-- Publish Settings -->
+      <div class="card">
+        <span class="label">Settings</span>
+        <div class="setting-row">
+          <span>Publish Time</span>
+          <select id="publishMode" style="width: 140px;" onchange="toggleScheduleInput()">
+            <option value="now">Now</option>
+            <option value="schedule">Schedule</option>
+          </select>
+        </div>
+        <div id="scheduleRow" class="setting-row hidden">
+          <span>Date & Time (SL)</span>
+          <input type="datetime-local" id="scheduleTime" style="width: 195px;" />
+        </div>
+        <div class="setting-row">
+          <span>Auto-Delete</span>
+          <select id="autoDeleteHours" style="width: 140px;">
+            <option value="0">Off</option>
+            <option value="1">After 1 Hour</option>
+            <option value="6">After 6 Hours</option>
+            <option value="12">After 12 Hours</option>
+            <option value="24">After 24 Hours</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <span>Silent Post (No Sound)</span>
+          <input type="checkbox" id="optSilent" />
+        </div>
+        <div class="setting-row">
+          <span>Pin Post</span>
+          <input type="checkbox" id="optPin" />
+        </div>
+        <div class="setting-row">
+          <span>Protect Content (No Forward)</span>
+          <input type="checkbox" id="optProtect" />
+        </div>
+      </div>
+
+      <div class="action-grid">
+        <button class="btn btn-secondary" onclick="openPreviewModal()">Preview</button>
+        <button class="btn btn-secondary" onclick="savePost('draft')">Save Draft</button>
+        <button id="publishBtn" class="btn btn-primary" onclick="publishPost()">Publish</button>
+      </div>
+    </div>
+
+    <!-- TAB 2: CHANNELS -->
+    <div id="tabChannels" class="container hidden">
+      <div class="card">
+        <!-- Telegram Native Picker Button (Shown ONLY in Telegram App) -->
+        <div id="tgNativePickerWrap" class="hidden">
+          <button class="btn btn-primary" style="width:100%;" onclick="pickChannelFromTelegram()">
+            + Select Channel from Telegram
+          </button>
+          <p style="font-size:12px; color:var(--muted); margin-top:8px; text-align:center;">
+            Pick any channel where you are an admin.
+          </p>
+        </div>
+
+        <!-- Web Browser Manual Add (Shown ONLY in Browser) -->
+        <div id="webChannelAddWrap" class="hidden">
+          <span class="label">Add Channel (@username or ID)</span>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="manualChannelInput" placeholder="@channel or -100123456789" />
+            <button class="btn btn-primary" onclick="addChannelManual()">Add</button>
+          </div>
+          <p style="font-size:12px; color:var(--muted); margin-top:8px;">
+            Make sure your bot is added as an Admin in the channel first.
+          </p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+          <span class="label" style="margin:0;">Connected Channels</span>
+          <button class="mini-badge" onclick="loadState()">Refresh</button>
+        </div>
+        <div id="channelsList"></div>
+      </div>
+    </div>
+
+    <!-- TAB 3: POSTS -->
+    <div id="tabPosts" class="container hidden">
+      <div class="sub-tabs">
+        <button class="sub-tab active" id="st_published" onclick="switchPostFilter('published')">Published</button>
+        <button class="sub-tab" id="st_scheduled" onclick="switchPostFilter('scheduled')">Scheduled</button>
+        <button class="sub-tab" id="st_draft" onclick="switchPostFilter('draft')">Drafts</button>
+      </div>
+      <div id="postsList"></div>
+    </div>
+
+    <!-- Bottom Nav -->
+    <div class="bottom-nav">
+      <button class="nav-btn active" id="navCreate" onclick="switchTab('Create')">
+        <span class="nav-icon">✏️</span><span>Create</span>
+      </button>
+      <button class="nav-btn" id="navChannels" onclick="switchTab('Channels')">
+        <span class="nav-icon">📢</span><span>Channels</span>
+      </button>
+      <button class="nav-btn" id="navPosts" onclick="switchTab('Posts')">
+        <span class="nav-icon">📄</span><span>Posts</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Add Button Modal -->
+  <div id="btnModal" class="modal-backdrop hidden" onclick="closeModal('btnModal')">
+    <div class="modal-sheet" onclick="event.stopPropagation()">
+      <h3 style="margin-bottom:12px; font-size:16px;">Add Button</h3>
+      <span class="label">Button Text</span>
+      <input type="text" id="btnLabelInput" placeholder="e.g. ⭐️ Telegram Stars" style="margin-bottom:10px;" />
+      <span class="label">Link URL</span>
+      <input type="url" id="btnUrlInput" placeholder="https://t.me/..." style="margin-bottom:10px;" />
+      <span class="label">Layout</span>
+      <select id="btnLayoutInput" style="margin-bottom:14px;">
+        <option value="full">Full Width (New Row)</option>
+        <option value="half">Side by Side (Half Width)</option>
+      </select>
+      <div style="display:flex; gap:8px;">
+        <button class="btn btn-secondary" style="flex:1;" onclick="saveAsPreset()">Save Preset</button>
+        <button class="btn btn-primary" style="flex:1;" onclick="confirmAddButton()">Add to Post</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Presets Modal -->
+  <div id="presetModal" class="modal-backdrop hidden" onclick="closeModal('presetModal')">
+    <div class="modal-sheet" onclick="event.stopPropagation()">
+      <h3 style="margin-bottom:12px; font-size:16px;">Saved Button Presets</h3>
+      <div id="presetsList"></div>
+    </div>
+  </div>
+
+  <!-- Preview Modal -->
+  <div id="previewModal" class="modal-backdrop hidden" onclick="closeModal('previewModal')">
+    <div class="modal-sheet" onclick="event.stopPropagation()">
+      <h3 style="margin-bottom:6px; font-size:16px;">Post Preview</h3>
+      <div class="tg-preview-bubble">
+        <div id="previewMediaSlot"></div>
+        <div id="previewTextSlot"></div>
+        <div id="previewBtnsSlot" class="tg-preview-btns"></div>
+      </div>
+      <button class="btn btn-primary" style="width:100%;" onclick="closeModal('previewModal')">Close</button>
+    </div>
+  </div>
+
+  <!-- Edit Published Post Modal -->
+  <div id="editModal" class="modal-backdrop hidden" onclick="closeModal('editModal')">
+    <div class="modal-sheet" onclick="event.stopPropagation()">
+      <h3 style="margin-bottom:12px; font-size:16px;">Edit Post</h3>
+      <textarea id="editPostText" style="margin-bottom:12px;"></textarea>
+      <button class="btn btn-primary" style="width:100%;" onclick="submitEditPost()">Save Changes</button>
+    </div>
+  </div>
+
+<script>
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const isTelegramApp = Boolean(tg && tg.initData && tg.initData.length > 0);
+
+  let authHeaders = {};
+  let appState = { channels: [], posts: [], presets: [], botUsername: '' };
+  let selectedChannelIds = new Set();
+  let postButtons = [];
+  let attachedMedia = null; // { dataUrl, type, name }
+  let currentPostFilter = 'published';
+  let editingPostId = null;
+
+  function showToast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.remove('hidden');
+    setTimeout(() => t.classList.add('hidden'), 2600);
+  }
+
+  async function initApp() {
+    if (isTelegramApp) {
+      tg.ready();
+      tg.expand();
+      authHeaders = { 'X-TG-Init-Data': tg.initData };
+      document.getElementById('modeBadge').textContent = 'Telegram App';
+      document.getElementById('tgNativePickerWrap').classList.remove('hidden');
+      document.getElementById('appRoot').classList.remove('hidden');
+      await loadState();
+    } else {
+      document.getElementById('modeBadge').textContent = 'Web Browser';
+      document.getElementById('webChannelAddWrap').classList.remove('hidden');
+      const savedPin = localStorage.getItem('studio_admin_pin');
+      if (savedPin) {
+        authHeaders = { 'X-Admin-Pin': savedPin };
+        const ok = await loadState(true);
+        if (ok) {
+          document.getElementById('appRoot').classList.remove('hidden');
+          return;
+        }
+      }
+      document.getElementById('pinScreen').classList.remove('hidden');
+    }
+  }
+
+  async function submitPin() {
+    const pin = document.getElementById('pinInput').value.trim();
+    if (!pin) return;
+    authHeaders = { 'X-Admin-Pin': pin };
+    const ok = await loadState(true);
+    if (ok) {
+      localStorage.setItem('studio_admin_pin', pin);
+      document.getElementById('pinScreen').classList.add('hidden');
+      document.getElementById('appRoot').classList.remove('hidden');
+    } else {
+      showToast('Invalid PIN');
+    }
+  }
+
+  async function apiCall(action, payload = {}) {
+    const res = await fetch('/api/studio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
+      body: JSON.stringify({ action, ...payload })
+    });
+    return res.json();
+  }
+
+  async function loadState(silent = false) {
+    try {
+      const data = await apiCall('get_state');
+      if (!data.ok) {
+        if (!silent) showToast(data.error || 'Access Denied');
+        return false;
+      }
+      appState = data;
+      if (selectedChannelIds.size === 0 && appState.channels.length > 0) {
+        appState.channels.forEach(c => selectedChannelIds.add(String(c.chat_id)));
+      }
+      renderChannels();
+      renderButtons();
+      renderPosts();
+      return true;
+    } catch (e) {
+      if (!silent) showToast('Connection error');
+      return false;
+    }
+  }
+
+  function switchTab(tabName) {
+    ['Create', 'Channels', 'Posts'].forEach(t => {
+      document.getElementById('tab' + t).classList.toggle('hidden', t !== tabName);
+      document.getElementById('nav' + t).classList.toggle('active', t === tabName);
+    });
+    if (tabName === 'Posts') loadState(true);
+  }
+
+  // --- Channels ---
+  function renderChannels() {
+    const chipsEl = document.getElementById('createChannelChips');
+    const listEl = document.getElementById('channelsList');
+    chipsEl.innerHTML = '';
+    listEl.innerHTML = '';
+
+    if (appState.channels.length === 0) {
+      chipsEl.innerHTML = '<span style="font-size:13px; color:var(--muted);">No channels connected. Go to Channels tab.</span>';
+      listEl.innerHTML = '<p style="font-size:13px; color:var(--muted); text-align:center; padding:14px;">No channels yet.</p>';
+      return;
+    }
+
+    appState.channels.forEach(ch => {
+      const idStr = String(ch.chat_id);
+      const isSel = selectedChannelIds.has(idStr);
+
+      const chip = document.createElement('div');
+      chip.className = 'chip' + (isSel ? ' selected' : '');
+      chip.innerHTML = `<span class="chip-dot"></span><span>${escapeHtml(ch.title)}</span>`;
+      chip.onclick = () => {
+        if (selectedChannelIds.has(idStr)) selectedChannelIds.delete(idStr);
+        else selectedChannelIds.add(idStr);
+        renderChannels();
+      };
+      chipsEl.appendChild(chip);
+
+      const item = document.createElement('div');
+      item.className = 'ch-item';
+      const initial = (ch.title || 'C').charAt(0).toUpperCase();
+      item.innerHTML = `
+        <div class="ch-left">
+          <div class="ch-avatar">${initial}</div>
+          <div style="min-width:0;">
+            <div class="ch-name">${escapeHtml(ch.title)}</div>
+            <div class="ch-sub">${ch.members_count || 0} subscribers</div>
+          </div>
+        </div>
+        <button class="btn btn-danger" style="padding:6px 10px; font-size:12px;" onclick="removeChannel('${idStr}')">Remove</button>
+      `;
+      listEl.appendChild(item);
+    });
+  }
+
+  async function pickChannelFromTelegram() {
+    // Opens bot chat with native request_chat keyboard so Telegram shows the native channel picker
+    const botUser = appState.botUsername;
+    if (botUser && tg) {
+      tg.openTelegramLink(`https://t.me/${botUser}?start=pickchannel`);
+      tg.close();
+    } else {
+      showToast('Bot username not configured');
+    }
+  }
+
+  async function addChannelManual() {
+    const val = document.getElementById('manualChannelInput').value.trim();
+    if (!val) return;
+    const res = await apiCall('add_channel', { channel_ref: val });
+    if (res.ok) {
+      document.getElementById('manualChannelInput').value = '';
+      showToast('Channel added');
+      await loadState(true);
+    } else {
+      showToast(res.error || 'Failed to add channel');
+    }
+  }
+
+  async function removeChannel(chatId) {
+    const res = await apiCall('remove_channel', { chat_id: chatId });
+    if (res.ok) {
+      selectedChannelIds.delete(String(chatId));
+      showToast('Channel removed');
+      await loadState(true);
+    }
+  }
+
+  // --- Text Formatting & Media ---
+  function updateCharCount() {
+    const len = document.getElementById('postText').value.length;
+    const max = attachedMedia ? 1024 : 4096;
+    document.getElementById('charCount').textContent = `${len} / ${max}`;
+  }
+
+  function wrapTag(tag) {
+    const ta = document.getElementById('postText');
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const sel = ta.value.substring(start, end) || 'text';
+    const replacement = `<${tag}>${sel}</${tag}>`;
+    ta.setRangeText(replacement, start, end, 'select');
+    ta.focus();
+    updateCharCount();
+  }
+
+  function insertLink() {
+    const url = prompt('Enter URL (https://...):');
+    if (!url) return;
+    const ta = document.getElementById('postText');
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const sel = ta.value.substring(start, end) || 'Click Here';
+    ta.setRangeText(`<a href="${url}">${sel}</a>`, start, end, 'select');
+    ta.focus();
+    updateCharCount();
+  }
+
+  function handleMediaSelect(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 4.2 * 1024 * 1024) {
+      showToast('Max file size is 4MB');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const isVideo = file.type.startsWith('video/');
+      attachedMedia = {
+        dataUrl: reader.result,
+        type: isVideo ? 'video' : 'photo',
+        name: file.name
+      };
+      const wrap = document.getElementById('mediaPreviewWrap');
+      wrap.classList.remove('hidden');
+      wrap.innerHTML = isVideo
+        ? `<video src="${reader.result}" controls></video><button class="remove-media" onclick="clearMedia()">✕</button>`
+        : `<img src="${reader.result}" /><button class="remove-media" onclick="clearMedia()">✕</button>`;
+      updateCharCount();
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function clearMedia() {
+    attachedMedia = null;
+    document.getElementById('mediaInput').value = '';
+    const wrap = document.getElementById('mediaPreviewWrap');
+    wrap.innerHTML = '';
+    wrap.classList.add('hidden');
+    updateCharCount();
+  }
+
+  // --- Buttons Builder ---
+  function renderButtons() {
+    const el = document.getElementById('buttonsList');
+    if (postButtons.length === 0) {
+      el.innerHTML = '<p style="font-size:12px; color:var(--muted);">No buttons added.</p>';
+      return;
+    }
+    el.innerHTML = '';
+    postButtons.forEach((b, idx) => {
+      const row = document.createElement('div');
+      row.className = 'btn-row-item';
+      row.innerHTML = `
+        <div class="info">
+          <div class="b-title">${escapeHtml(b.text)}</div>
+          <div class="b-url">${escapeHtml(b.url)}</div>
+        </div>
+        <button class="mini-badge" onclick="toggleBtnLayout(${idx})">${b.layout === 'half' ? 'Half' : 'Full'}</button>
+        <button class="mini-badge" style="color:#f87171;" onclick="removeBtn(${idx})">✕</button>
+      `;
+      el.appendChild(row);
+    });
+  }
+
+  function openAddBtnModal() {
+    document.getElementById('btnLabelInput').value = '';
+    document.getElementById('btnUrlInput').value = '';
+    document.getElementById('btnModal').classList.remove('hidden');
+  }
+
+  function confirmAddButton() {
+    const text = document.getElementById('btnLabelInput').value.trim();
+    const url = document.getElementById('btnUrlInput').value.trim();
+    const layout = document.getElementById('btnLayoutInput').value;
+    if (!text || !url.startsWith('http')) {
+      showToast('Enter valid text and https:// link');
+      return;
+    }
+    postButtons.push({ text, url, layout });
+    renderButtons();
+    closeModal('btnModal');
+  }
+
+  async function saveAsPreset() {
+    const text = document.getElementById('btnLabelInput').value.trim();
+    const url = document.getElementById('btnUrlInput').value.trim();
+    const layout = document.getElementById('btnLayoutInput').value;
+    if (!text || !url.startsWith('http')) {
+      showToast('Enter valid text and link first');
+      return;
+    }
+    const res = await apiCall('save_preset', { text, url, layout });
+    if (res.ok) {
+      showToast('Preset saved');
+      await loadState(true);
+    }
+  }
+
+  function openPresetModal() {
+    const el = document.getElementById('presetsList');
+    if (!appState.presets || appState.presets.length === 0) {
+      el.innerHTML = '<p style="font-size:13px; color:var(--muted); padding:10px 0;">No presets saved yet.</p>';
+    } else {
+      el.innerHTML = '';
+      appState.presets.forEach(p => {
+        const div = document.createElement('div');
+        div.className = 'btn-row-item';
+        div.innerHTML = `
+          <div class="info">
+            <div class="b-title">${escapeHtml(p.text)}</div>
+            <div class="b-url">${escapeHtml(p.url)}</div>
+          </div>
+          <button class="mini-badge" style="background:var(--accent); color:#fff;" onclick="usePreset('${escapeAttr(p.text)}','${escapeAttr(p.url)}','${p.layout || 'full'}')">Use</button>
+          <button class="mini-badge" style="color:#f87171;" onclick="deletePreset('${p._id}')">✕</button>
+        `;
+        el.appendChild(div);
+      });
+    }
+    document.getElementById('presetModal').classList.remove('hidden');
+  }
+
+  function usePreset(text, url, layout) {
+    postButtons.push({ text, url, layout });
+    renderButtons();
+    closeModal('presetModal');
+  }
+
+  async function deletePreset(id) {
+    await apiCall('delete_preset', { id });
+    await loadState(true);
+    openPresetModal();
+  }
+
+  function toggleBtnLayout(idx) {
+    postButtons[idx].layout = postButtons[idx].layout === 'half' ? 'full' : 'half';
+    renderButtons();
+  }
+
+  function removeBtn(idx) {
+    postButtons.splice(idx, 1);
+    renderButtons();
+  }
+
+  function toggleScheduleInput() {
+    const isSched = document.getElementById('publishMode').value === 'schedule';
+    document.getElementById('scheduleRow').classList.toggle('hidden', !isSched);
+    document.getElementById('publishBtn').textContent = isSched ? 'Schedule' : 'Publish';
+  }
+
+  function openPreviewModal() {
+    const text = document.getElementById('postText').value;
+    const mediaSlot = document.getElementById('previewMediaSlot');
+    mediaSlot.innerHTML = '';
+    if (attachedMedia) {
+      mediaSlot.innerHTML = attachedMedia.type === 'video'
+        ? `<video src="${attachedMedia.dataUrl}" style="width:100%; border-radius:8px; margin-bottom:8px;" controls></video>`
+        : `<img src="${attachedMedia.dataUrl}" style="width:100%; border-radius:8px; margin-bottom:8px;" />`;
+    }
+    document.getElementById('previewTextSlot').innerHTML = text.replace(/\n/g, '<br>') || '<i style="color:var(--muted)">Empty text</i>';
+    const btnsSlot = document.getElementById('previewBtnsSlot');
+    btnsSlot.innerHTML = '';
+    postButtons.forEach(b => {
+      const div = document.createElement('div');
+      div.className = 'tg-p-btn' + (b.layout === 'half' ? ' half' : '');
+      div.textContent = b.text;
+      btnsSlot.appendChild(div);
+    });
+    document.getElementById('previewModal').classList.remove('hidden');
+  }
+
+  function closeModal(id) {
+    document.getElementById(id).classList.add('hidden');
+  }
+
+  function collectPostPayload() {
+    return {
+      channel_ids: Array.from(selectedChannelIds),
+      text: document.getElementById('postText').value,
+      media: attachedMedia,
+      buttons: postButtons,
+      publish_mode: document.getElementById('publishMode').value,
+      schedule_time: document.getElementById('scheduleTime').value,
+      auto_delete_hours: Number(document.getElementById('autoDeleteHours').value || 0),
+      silent: document.getElementById('optSilent').checked,
+      pin: document.getElementById('optPin').checked,
+      protect: document.getElementById('optProtect').checked
+    };
+  }
+
+  async function savePost(status) {
+    const payload = collectPostPayload();
+    if (!payload.text.trim() && !payload.media) {
+      showToast('Write text or attach media first');
+      return;
+    }
+    const res = await apiCall('save_draft', payload);
+    if (res.ok) {
+      showToast('Draft saved');
+      await loadState(true);
+    } else {
+      showToast(res.error || 'Failed');
+    }
+  }
+
+  async function publishPost() {
+    const payload = collectPostPayload();
+    if (payload.channel_ids.length === 0) {
+      showToast('Select at least 1 channel');
+      return;
+    }
+    if (!payload.text.trim() && !payload.media) {
+      showToast('Write text or attach media first');
+      return;
+    }
+    if (payload.publish_mode === 'schedule' && !payload.schedule_time) {
+      showToast('Select schedule date & time');
+      return;
+    }
+
+    const btn = document.getElementById('publishBtn');
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+
+    const res = await apiCall('publish_post', payload);
+    btn.disabled = false;
+    toggleScheduleInput();
+
+    if (res.ok) {
+      showToast(payload.publish_mode === 'schedule' ? 'Post scheduled!' : 'Published!');
+      document.getElementById('postText').value = '';
+      postButtons = [];
+      clearMedia();
+      renderButtons();
+      updateCharCount();
+      await loadState(true);
+    } else {
+      showToast(res.error || 'Publish failed');
+    }
+  }
+
+  // --- Posts History ---
+  function switchPostFilter(status) {
+    currentPostFilter = status;
+    ['published', 'scheduled', 'draft'].forEach(s => {
+      document.getElementById('st_' + s).classList.toggle('active', s === status);
+    });
+    renderPosts();
+  }
+
+  function renderPosts() {
+    const el = document.getElementById('postsList');
+    const filtered = (appState.posts || []).filter(p => p.status === currentPostFilter);
+    if (filtered.length === 0) {
+      el.innerHTML = `<p style="font-size:13px; color:var(--muted); text-align:center; padding:24px;">No ${currentPostFilter} posts.</p>`;
+      return;
+    }
+    el.innerHTML = '';
+    filtered.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'post-card';
+      const chNames = (p.channel_titles || []).join(', ') || 'Channel';
+      const dateLabel = p.schedule_time || p.created_at || '';
+
+      let actionsHtml = '';
+      if (p.status === 'draft') {
+        actionsHtml = `
+          <button class="btn btn-primary" style="padding:6px 12px; font-size:12px;" onclick="loadDraftToEditor('${p._id}')">Load & Edit</button>
+          <button class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="deletePostRecord('${p._id}', false)">Delete</button>
+        `;
+      } else if (p.status === 'scheduled') {
+        actionsHtml = `
+          <button class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="deletePostRecord('${p._id}', false)">Cancel Schedule</button>
+        `;
+      } else {
+        actionsHtml = `
+          <button class="btn btn-secondary" style="padding:6px 12px; font-size:12px;" onclick="openEditPublished('${p._id}')">Edit Text</button>
+          <button class="btn btn-secondary" style="padding:6px 12px; font-size:12px;" onclick="loadDraftToEditor('${p._id}')">Repost</button>
+          <button class="btn btn-danger" style="padding:6px 12px; font-size:12px;" onclick="deletePostRecord('${p._id}', true)">Delete</button>
+        `;
+      }
+
+      card.innerHTML = `
+        <div class="post-meta">
+          <span>📢 ${escapeHtml(chNames)}</span>
+          <span>${escapeHtml(dateLabel)}</span>
+        </div>
+        <div class="post-text">${escapeHtml(p.text || '[Media Post]')}</div>
+        <div class="post-actions">${actionsHtml}</div>
+      `;
+      el.appendChild(card);
+    });
+  }
+
+  function loadDraftToEditor(id) {
+    const p = appState.posts.find(x => x._id === id);
+    if (!p) return;
+    document.getElementById('postText').value = p.text || '';
+    postButtons = Array.isArray(p.buttons) ? JSON.parse(JSON.stringify(p.buttons)) : [];
+    renderButtons();
+    updateCharCount();
+    switchTab('Create');
+    showToast('Loaded into editor');
+  }
+
+  function openEditPublished(id) {
+    const p = appState.posts.find(x => x._id === id);
+    if (!p) return;
+    editingPostId = id;
+    document.getElementById('editPostText').value = p.text || '';
+    document.getElementById('editModal').classList.remove('hidden');
+  }
+
+  async function submitEditPost() {
+    if (!editingPostId) return;
+    const newText = document.getElementById('editPostText').value;
+    const res = await apiCall('edit_published', { id: editingPostId, text: newText });
+    closeModal('editModal');
+    if (res.ok) {
+      showToast('Post updated on Telegram');
+      await loadState(true);
+    } else {
+      showToast(res.error || 'Edit failed');
+    }
+  }
+
+  async function deletePostRecord(id, deleteFromTelegram) {
+    const res = await apiCall('delete_post', { id, delete_from_telegram: deleteFromTelegram });
+    if (res.ok) {
+      showToast('Deleted');
+      await loadState(true);
+    } else {
+      showToast(res.error || 'Delete failed');
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str || '').replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+  }
+  function escapeAttr(str) {
+    return String(str || '').replace(/'/g, "\\'");
+  }
+
+  initApp();
+</script>
+</body>
+</html>
