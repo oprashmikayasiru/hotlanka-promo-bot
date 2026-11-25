@@ -152,6 +152,7 @@ module.exports = async (req, res) => {
       const me = await bot.telegram.getMe().catch(() => ({ username: '' }));
       const rawChannels = await db.collection('studio_channels').find({}).sort({ added_at: -1 }).toArray();
 
+      // Auto-refresh live subscriber count & title for every connected channel
       const channels = await Promise.all(
         rawChannels.map(async (ch) => {
           try {
@@ -181,18 +182,19 @@ module.exports = async (req, res) => {
       return res.status(200).json({
         ok: true,
         botUsername: me.username || '',
+        uploadToken: BOT_TOKEN, // Cached on client for 0-roundtrip direct upload
         channels,
         posts,
         presets
       });
     }
 
-    // Provides authorized admin session with Bot Token for Direct Browser->Telegram Media Upload
+    // Fallback token endpoint if client cache was cleared
     if (action === 'get_upload_token') {
       return res.status(200).json({ ok: true, token: BOT_TOKEN });
     }
 
-    // Records already-published Direct Media Post into MongoDB history
+    // Records already-published Direct Browser->Telegram post into MongoDB history
     if (action === 'record_published') {
       const channelIds = (body.channel_ids || []).map(String);
       const channels = await db.collection('studio_channels').find({
