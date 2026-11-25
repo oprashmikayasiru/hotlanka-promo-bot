@@ -968,6 +968,7 @@
   let postButtons = [];
   let editingBtnIndex = -1;
   let attachedMedia = null;
+  let attachedMediaBlob = null;
   let currentPostFilter = 'published';
   let editingPostId = null;
   let publishMode = 'now';
@@ -1027,7 +1028,6 @@
 
     document.getElementById('bottomNavWrap').classList.toggle('kb-hidden', kbOpen);
 
-    // Show floating keyboard dismiss pill ONLY on Mobile (ios/android) when keyboard is open
     const kbBtn = document.getElementById('floatingKbDismiss');
     if (isMobileTelegram && kbOpen) {
       kbBtn.classList.remove('hidden');
@@ -1041,9 +1041,7 @@
     if (document.activeElement && typeof document.activeElement.blur === 'function') {
       document.activeElement.blur();
     }
-    setTimeout(() => {
-      syncViewportState();
-    }, 60);
+    setTimeout(syncViewportState, 60);
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -1054,20 +1052,11 @@
           try { tg.requestFullscreen(); } catch (e) {}
         }
       }
-      requestAnimationFrame(() => {
-        syncViewportState();
-      });
+      requestAnimationFrame(syncViewportState);
     }
   });
 
-  window.addEventListener('pageshow', () => {
-    syncViewportState();
-  });
-
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener('resize', syncViewportState);
-  }
-
+  window.addEventListener('pageshow', syncViewportState);
   document.addEventListener('focusin', syncViewportState);
   document.addEventListener('focusout', () => setTimeout(syncViewportState, 70));
 
@@ -1128,7 +1117,6 @@
     }
   }
 
-  // Instant Hydrate from LocalStorage Cache
   function hydrateFromCache() {
     try {
       const raw = localStorage.getItem(STATE_CACHE_KEY);
@@ -1153,7 +1141,6 @@
     if (isTelegramApp) {
       tg.ready();
       tg.expand();
-      // Enable True Full-Screen ONLY on Mobile (iOS/Android), keep compact popup on Desktop
       if (isMobileTelegram && typeof tg.requestFullscreen === 'function') {
         try { tg.requestFullscreen(); } catch (e) {}
       }
@@ -1455,52 +1442,69 @@
       .replace(/\n/g, '<br>');
   }
 
-  // --- Shared Media Loader (File Picker & Clipboard Paste) ---
+  // --- Shared Media Loader (Stores File/Blob for Direct Telegram Upload + DataURL for Schedule) ---
   function loadMediaFile(file) {
     if (!file) return;
-    if (file.size > 4.2 * 1024 * 1024) {
-      showToast('Max file size is 4MB');
+    const isVideo = file.type.startsWith('video/');
+    if (isVideo && file.size > 45 * 1024 * 1024) {
+      showToast('Max video size is 45MB');
       return;
     }
+    if (!isVideo && file.size > 10 * 1024 * 1024) {
+      showToast('Max image size is 10MB');
+      return;
+    }
+
     haptic('light');
-    const reader = new FileReader();
-    reader.onload = () => {
-      const isVideo = file.type.startsWith('video/');
-      const dataUrl = reader.result;
-      attachedMedia = {
-        dataUrl,
-        type: isVideo ? 'video' : 'photo',
-        name: file.name || (isVideo ? 'pasted_video.mp4' : 'pasted_image.png')
+    attachedMediaBlob = file;
+    const fileName = file.name || (isVideo ? 'pasted_video.mp4' : 'pasted_image.png');
+    const objUrl = URL.createObjectURL(file);
+
+    // Also keep base64 if small enough (< 3.8MB) in case user switches to Schedule mode
+    if (file.size <= 3.8 * 1024 * 1024) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        attachedMedia = {
+          dataUrl: reader.result,
+          type: isVideo ? 'video' : 'photo',
+          name: fileName
+        };
       };
+      reader.readAsDataURL(file);
+    } else {
+      attachedMedia = {
+        dataUrl: null,
+        type: isVideo ? 'video' : 'photo',
+        name: fileName
+      };
+    }
 
-      const wrap = document.getElementById('mediaPreviewWrap');
-      wrap.classList.remove('hidden', 'tall-stage', 'wide-stage');
+    const wrap = document.getElementById('mediaPreviewWrap');
+    wrap.classList.remove('hidden', 'tall-stage', 'wide-stage');
 
-      if (isVideo) {
-        wrap.innerHTML = `
-          <video class="media-blur-bg" src="${dataUrl}" muted></video>
-          <video id="fgVidEl" class="media-fg" src="${dataUrl}" controls></video>
-          <button class="remove-media" onclick="clearMedia()">✕</button>
-        `;
-        const vid = document.getElementById('fgVidEl');
-        vid.onloadedmetadata = () => {
-          const isTall = vid.videoHeight >= vid.videoWidth;
-          wrap.classList.add(isTall ? 'tall-stage' : 'wide-stage');
-          if (!isTall) wrap.querySelector('.media-blur-bg')?.remove();
-        };
-      } else {
-        const probe = new Image();
-        probe.onload = () => {
-          const isTall = probe.naturalHeight >= probe.naturalWidth;
-          wrap.classList.add(isTall ? 'tall-stage' : 'wide-stage');
-          wrap.innerHTML = isTall
-            ? `<img class="media-blur-bg" src="${dataUrl}" /><img class="media-fg" src="${dataUrl}" /><button class="remove-media" onclick="clearMedia()">✕</button>`
-            : `<img class="media-fg" src="${dataUrl}" /><button class="remove-media" onclick="clearMedia()">✕</button>`;
-        };
-        probe.src = dataUrl;
-      }
-    };
-    reader.readAsDataURL(file);
+    if (isVideo) {
+      wrap.innerHTML = `
+        <video class="media-blur-bg" src="${objUrl}" muted></video>
+        <video id="fgVidEl" class="media-fg" src="${objUrl}" controls></video>
+        <button class="remove-media" onclick="clearMedia()">✕</button>
+      `;
+      const vid = document.getElementById('fgVidEl');
+      vid.onloadedmetadata = () => {
+        const isTall = vid.videoHeight >= vid.videoWidth;
+        wrap.classList.add(isTall ? 'tall-stage' : 'wide-stage');
+        if (!isTall) wrap.querySelector('.media-blur-bg')?.remove();
+      };
+    } else {
+      const probe = new Image();
+      probe.onload = () => {
+        const isTall = probe.naturalHeight >= probe.naturalWidth;
+        wrap.classList.add(isTall ? 'tall-stage' : 'wide-stage');
+        wrap.innerHTML = isTall
+          ? `<img class="media-blur-bg" src="${objUrl}" /><img class="media-fg" src="${objUrl}" /><button class="remove-media" onclick="clearMedia()">✕</button>`
+          : `<img class="media-fg" src="${objUrl}" /><button class="remove-media" onclick="clearMedia()">✕</button>`;
+      };
+      probe.src = objUrl;
+    }
   }
 
   function handleMediaSelect(e) {
@@ -1511,6 +1515,7 @@
   function clearMedia() {
     haptic('light');
     attachedMedia = null;
+    attachedMediaBlob = null;
     document.getElementById('mediaInput').value = '';
     const wrap = document.getElementById('mediaPreviewWrap');
     wrap.innerHTML = '';
@@ -1663,6 +1668,32 @@
     });
   }
 
+  function buildReplyMarkupObject(buttons) {
+    if (!Array.isArray(buttons) || buttons.length === 0) return null;
+    const rows = [];
+    let halfBuffer = [];
+
+    for (const b of buttons) {
+      if (!b.text || !b.url) continue;
+      const btnObj = { text: b.text, url: b.url };
+      if (b.layout === 'half') {
+        halfBuffer.push(btnObj);
+        if (halfBuffer.length === 2) {
+          rows.push(halfBuffer);
+          halfBuffer = [];
+        }
+      } else {
+        if (halfBuffer.length > 0) {
+          rows.push(halfBuffer);
+          halfBuffer = [];
+        }
+        rows.push([btnObj]);
+      }
+    }
+    if (halfBuffer.length > 0) rows.push(halfBuffer);
+    return rows.length > 0 ? { inline_keyboard: rows } : null;
+  }
+
   function collectPostPayload() {
     const htmlText = serializeEditorToTelegramHtml(document.getElementById('postEditor'));
     const dVal = document.getElementById('scheduleDate').value;
@@ -1686,7 +1717,7 @@
 
   async function savePost() {
     const payload = collectPostPayload();
-    if (!payload.text.trim() && !payload.media) {
+    if (!payload.text.trim() && !attachedMediaBlob) {
       haptic('error');
       showToast('Write text or attach media first');
       return;
@@ -1702,6 +1733,100 @@
     }
   }
 
+  // --- Direct Browser-to-Telegram Media Upload (Zero Vercel 10s Timeout) ---
+  async function publishMediaDirectToTelegram(payload) {
+    const tokenRes = await apiCall('get_upload_token');
+    if (!tokenRes.ok || !tokenRes.token) {
+      throw new Error(tokenRes.error || 'Auth failed');
+    }
+
+    const botToken = tokenRes.token;
+    const isVideo = attachedMediaBlob.type.startsWith('video/');
+    const endpoint = isVideo ? 'sendVideo' : 'sendPhoto';
+    const fieldName = isVideo ? 'video' : 'photo';
+    const replyMarkup = buildReplyMarkupObject(payload.buttons);
+
+    const sentMessages = [];
+    let reusedFileId = null;
+
+    for (const cid of payload.channel_ids) {
+      let tgJson;
+
+      if (!reusedFileId) {
+        // Upload binary file directly to Telegram for the 1st channel
+        const fd = new FormData();
+        fd.append('chat_id', cid);
+        fd.append(fieldName, attachedMediaBlob, attachedMedia.name || (isVideo ? 'video.mp4' : 'image.png'));
+        if (payload.text) fd.append('caption', payload.text);
+        fd.append('parse_mode', 'HTML');
+        if (isVideo) fd.append('supports_streaming', 'true');
+        if (payload.silent) fd.append('disable_notification', 'true');
+        if (payload.protect) fd.append('protect_content', 'true');
+        if (replyMarkup) fd.append('reply_markup', JSON.stringify(replyMarkup));
+
+        const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/${endpoint}`, {
+          method: 'POST',
+          body: fd
+        });
+        tgJson = await tgRes.json();
+
+        if (!tgJson.ok) {
+          throw new Error(tgJson.description || 'Telegram upload error');
+        }
+
+        if (isVideo && tgJson.result?.video?.file_id) {
+          reusedFileId = tgJson.result.video.file_id;
+        } else if (!isVideo && Array.isArray(tgJson.result?.photo)) {
+          reusedFileId = tgJson.result.photo[tgJson.result.photo.length - 1].file_id;
+        }
+      } else {
+        // Instant file_id reuse for 2nd, 3rd+ channels
+        const jsonBody = {
+          chat_id: cid,
+          [fieldName]: reusedFileId,
+          caption: payload.text || '',
+          parse_mode: 'HTML',
+          disable_notification: Boolean(payload.silent),
+          protect_content: Boolean(payload.protect)
+        };
+        if (isVideo) jsonBody.supports_streaming = true;
+        if (replyMarkup) jsonBody.reply_markup = replyMarkup;
+
+        const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(jsonBody)
+        });
+        tgJson = await tgRes.json();
+        if (!tgJson.ok) {
+          throw new Error(tgJson.description || 'Telegram send error');
+        }
+      }
+
+      const msgId = tgJson.result?.message_id;
+      if (msgId) {
+        sentMessages.push({ chat_id: cid, message_id: msgId });
+        if (payload.pin) {
+          await fetch(`https://api.telegram.org/bot${botToken}/pinChatMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: cid, message_id: msgId, disable_notification: true })
+          }).catch(() => {});
+        }
+      }
+    }
+
+    // Record metadata in MongoDB via lightweight API call
+    await apiCall('record_published', {
+      channel_ids: payload.channel_ids,
+      sent_messages: sentMessages,
+      text: payload.text,
+      has_media: true,
+      buttons: payload.buttons,
+      auto_delete_hours: payload.auto_delete_hours
+    });
+  }
+
   async function publishPost() {
     const payload = collectPostPayload();
     if (payload.channel_ids.length === 0) {
@@ -1709,7 +1834,7 @@
       showToast('Select at least 1 channel');
       return;
     }
-    if (!payload.text.trim() && !payload.media) {
+    if (!payload.text.trim() && !attachedMediaBlob) {
       haptic('error');
       showToast('Write text or attach media first');
       return;
@@ -1719,17 +1844,26 @@
       showToast('Select date & time');
       return;
     }
+    if (payload.publish_mode === 'schedule' && attachedMediaBlob && !payload.media?.dataUrl) {
+      haptic('error');
+      showToast('Scheduled media must be under 3.8MB');
+      return;
+    }
 
     haptic('medium');
     const btn = document.getElementById('publishBtn');
     btn.disabled = true;
     btn.textContent = 'Sending...';
 
-    const res = await apiCall('publish_post', payload);
-    btn.disabled = false;
-    setPublishMode(publishMode);
+    try {
+      // Use Direct Browser->Telegram upload for instant media posts
+      if (payload.publish_mode === 'now' && attachedMediaBlob) {
+        await publishMediaDirectToTelegram(payload);
+      } else {
+        const res = await apiCall('publish_post', payload);
+        if (!res.ok) throw new Error(res.error || 'Publish failed');
+      }
 
-    if (res.ok) {
       haptic('success');
       showToast(payload.publish_mode === 'schedule' ? 'Post scheduled!' : 'Published!');
       document.getElementById('postEditor').innerHTML = '';
@@ -1737,9 +1871,12 @@
       clearMedia();
       renderLiveButtons();
       await loadState(true);
-    } else {
+    } catch (err) {
       haptic('error');
-      showToast(res.error || 'Publish failed');
+      showToast(err.message || 'Publish failed');
+    } finally {
+      btn.disabled = false;
+      setPublishMode(publishMode);
     }
   }
 
