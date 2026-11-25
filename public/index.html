@@ -964,6 +964,7 @@
 
   let authHeaders = {};
   let appState = { channels: [], posts: [], presets: [], botUsername: '' };
+  let cachedBotToken = ''; // Eliminates 1 network round-trip on direct upload
   let selectedChannelIds = new Set();
   let postButtons = [];
   let editingBtnIndex = -1;
@@ -1124,6 +1125,7 @@
       const cached = JSON.parse(raw);
       if (cached && Array.isArray(cached.channels)) {
         appState = cached;
+        if (cached.uploadToken) cachedBotToken = cached.uploadToken;
         renderChannels();
         renderLiveButtons();
         renderPosts();
@@ -1159,6 +1161,7 @@
 
       const hadCache = hydrateFromCache();
       await loadState(hadCache, !hadCache);
+      prefetchUploadToken(); // Warm up upload token in background (eliminates 1 round-trip)
     } else {
       document.getElementById('modeBadge').textContent = 'Web Browser';
       document.getElementById('webChannelAddWrap').classList.remove('hidden');
@@ -1168,11 +1171,24 @@
         document.getElementById('appRoot').classList.remove('hidden');
         const hadCache = hydrateFromCache();
         const ok = await loadState(true, !hadCache);
-        if (ok) return;
+        if (ok) {
+          prefetchUploadToken();
+          return;
+        }
         document.getElementById('appRoot').classList.add('hidden');
       }
       document.getElementById('pinScreen').classList.remove('hidden');
     }
+  }
+
+  async function prefetchUploadToken() {
+    if (cachedBotToken) return;
+    try {
+      const tokenRes = await apiCall('get_upload_token');
+      if (tokenRes.ok && tokenRes.token) {
+        cachedBotToken = tokenRes.token;
+      }
+    } catch (e) {}
   }
 
   async function submitPin() {
@@ -1184,6 +1200,7 @@
     const ok = await loadState(true, true);
     if (ok) {
       localStorage.setItem('studio_admin_pin', pin);
+      prefetchUploadToken();
     } else {
       document.getElementById('appRoot').classList.add('hidden');
       document.getElementById('pinScreen').classList.remove('hidden');
@@ -1208,6 +1225,7 @@
         return false;
       }
       appState = data;
+      if (data.uploadToken) cachedBotToken = data.uploadToken;
       try { localStorage.setItem(STATE_CACHE_KEY, JSON.stringify(data)); } catch (e) {}
 
       renderChannels();
@@ -1460,7 +1478,6 @@
     const fileName = file.name || (isVideo ? 'pasted_video.mp4' : 'pasted_image.png');
     const objUrl = URL.createObjectURL(file);
 
-    // Also keep base64 if small enough (< 3.8MB) in case user switches to Schedule mode
     if (file.size <= 3.8 * 1024 * 1024) {
       const reader = new FileReader();
       reader.onload = () => {
@@ -1733,98 +1750,148 @@
     }
   }
 
-  // --- Direct Browser-to-Telegram Media Upload (Zero Vercel 10s Timeout) ---
-  async function publishMediaDirectToTelegram(payload) {
-    const tokenRes = await apiCall('get_upload_token');
-    if (!tokenRes.ok || !tokenRes.token) {
-      throw new Error(tokenRes.error || 'Auth failed');
+  // --- Helper: Pin Message in Background ---
+  function pinMessageAsync(botToken, chatId, messageId) {
+    return fetch(`https://api.telegram.org/bot${botToken}/pinChatMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, disable_notification: true })
+    }).catch(() => {});
+  }
+
+  // --- 1 Round-Trip Reduced + Parallel Channel Sending ---
+  async function publishDirectToTelegram(payload) {
+    // Use cached token immediately (0 extra round-trips), fallback to fetch if empty
+    let botToken = cachedBotToken;
+    if (!botToken) {
+      const tokenRes = await apiCall('get_upload_token');
+      if (!tokenRes.ok || !tokenRes.token) {
+        throw new Error(tokenRes.error || 'Auth failed');
+      }
+      botToken = tokenRes.token;
+      cachedBotToken = botToken;
     }
 
-    const botToken = tokenRes.token;
-    const isVideo = attachedMediaBlob.type.startsWith('video/');
-    const endpoint = isVideo ? 'sendVideo' : 'sendPhoto';
-    const fieldName = isVideo ? 'video' : 'photo';
     const replyMarkup = buildReplyMarkupObject(payload.buttons);
-
+    const channelIds = payload.channel_ids;
     const sentMessages = [];
-    let reusedFileId = null;
+    const pinPromises = [];
 
-    for (const cid of payload.channel_ids) {
-      let tgJson;
+    // CASE A: Text-Only Direct Parallel Send to all channels at once
+    if (!attachedMediaBlob) {
+      const results = await Promise.all(
+        channelIds.map(async (cid) => {
+          const body = {
+            chat_id: cid,
+            text: payload.text,
+            parse_mode: 'HTML',
+            disable_notification: Boolean(payload.silent),
+            protect_content: Boolean(payload.protect)
+          };
+          if (replyMarkup) body.reply_markup = replyMarkup;
 
-      if (!reusedFileId) {
-        // Upload binary file directly to Telegram for the 1st channel
-        const fd = new FormData();
-        fd.append('chat_id', cid);
-        fd.append(fieldName, attachedMediaBlob, attachedMedia.name || (isVideo ? 'video.mp4' : 'image.png'));
-        if (payload.text) fd.append('caption', payload.text);
-        fd.append('parse_mode', 'HTML');
-        if (isVideo) fd.append('supports_streaming', 'true');
-        if (payload.silent) fd.append('disable_notification', 'true');
-        if (payload.protect) fd.append('protect_content', 'true');
-        if (replyMarkup) fd.append('reply_markup', JSON.stringify(replyMarkup));
-
-        const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/${endpoint}`, {
-          method: 'POST',
-          body: fd
-        });
-        tgJson = await tgRes.json();
-
-        if (!tgJson.ok) {
-          throw new Error(tgJson.description || 'Telegram upload error');
-        }
-
-        if (isVideo && tgJson.result?.video?.file_id) {
-          reusedFileId = tgJson.result.video.file_id;
-        } else if (!isVideo && Array.isArray(tgJson.result?.photo)) {
-          reusedFileId = tgJson.result.photo[tgJson.result.photo.length - 1].file_id;
-        }
-      } else {
-        // Instant file_id reuse for 2nd, 3rd+ channels
-        const jsonBody = {
-          chat_id: cid,
-          [fieldName]: reusedFileId,
-          caption: payload.text || '',
-          parse_mode: 'HTML',
-          disable_notification: Boolean(payload.silent),
-          protect_content: Boolean(payload.protect)
-        };
-        if (isVideo) jsonBody.supports_streaming = true;
-        if (replyMarkup) jsonBody.reply_markup = replyMarkup;
-
-        const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/${endpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(jsonBody)
-        });
-        tgJson = await tgRes.json();
-        if (!tgJson.ok) {
-          throw new Error(tgJson.description || 'Telegram send error');
-        }
-      }
-
-      const msgId = tgJson.result?.message_id;
-      if (msgId) {
-        sentMessages.push({ chat_id: cid, message_id: msgId });
-        if (payload.pin) {
-          await fetch(`https://api.telegram.org/bot${botToken}/pinChatMessage`, {
+          const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: cid, message_id: msgId, disable_notification: true })
-          }).catch(() => {});
+            body: JSON.stringify(body)
+          });
+          const tgJson = await tgRes.json();
+          if (!tgJson.ok) throw new Error(tgJson.description || 'Telegram send error');
+          return { cid, msgId: tgJson.result?.message_id };
+        })
+      );
+
+      for (const r of results) {
+        if (r.msgId) {
+          sentMessages.push({ chat_id: r.cid, message_id: r.msgId });
+          if (payload.pin) pinPromises.push(pinMessageAsync(botToken, r.cid, r.msgId));
+        }
+      }
+    } else {
+      // CASE B: Media Post -> Upload once to 1st channel, then Parallel file_id broadcast to remaining channels
+      const isVideo = attachedMediaBlob.type.startsWith('video/');
+      const endpoint = isVideo ? 'sendVideo' : 'sendPhoto';
+      const fieldName = isVideo ? 'video' : 'photo';
+
+      const [firstCid, ...restCids] = channelIds;
+      const fd = new FormData();
+      fd.append('chat_id', firstCid);
+      fd.append(fieldName, attachedMediaBlob, attachedMedia.name || (isVideo ? 'video.mp4' : 'image.png'));
+      if (payload.text) fd.append('caption', payload.text);
+      fd.append('parse_mode', 'HTML');
+      if (isVideo) fd.append('supports_streaming', 'true');
+      if (payload.silent) fd.append('disable_notification', 'true');
+      if (payload.protect) fd.append('protect_content', 'true');
+      if (replyMarkup) fd.append('reply_markup', JSON.stringify(replyMarkup));
+
+      const firstRes = await fetch(`https://api.telegram.org/bot${botToken}/${endpoint}`, {
+        method: 'POST',
+        body: fd
+      });
+      const firstJson = await firstRes.json();
+      if (!firstJson.ok) {
+        throw new Error(firstJson.description || 'Telegram upload error');
+      }
+
+      const firstMsgId = firstJson.result?.message_id;
+      if (firstMsgId) {
+        sentMessages.push({ chat_id: firstCid, message_id: firstMsgId });
+        if (payload.pin) pinPromises.push(pinMessageAsync(botToken, firstCid, firstMsgId));
+      }
+
+      // Extract Telegram file_id for instant parallel delivery to all other selected channels
+      let reusedFileId = null;
+      if (isVideo && firstJson.result?.video?.file_id) {
+        reusedFileId = firstJson.result.video.file_id;
+      } else if (!isVideo && Array.isArray(firstJson.result?.photo)) {
+        reusedFileId = firstJson.result.photo[firstJson.result.photo.length - 1].file_id;
+      }
+
+      if (restCids.length > 0 && reusedFileId) {
+        const parallelResults = await Promise.all(
+          restCids.map(async (cid) => {
+            const jsonBody = {
+              chat_id: cid,
+              [fieldName]: reusedFileId,
+              caption: payload.text || '',
+              parse_mode: 'HTML',
+              disable_notification: Boolean(payload.silent),
+              protect_content: Boolean(payload.protect)
+            };
+            if (isVideo) jsonBody.supports_streaming = true;
+            if (replyMarkup) jsonBody.reply_markup = replyMarkup;
+
+            const tgRes = await fetch(`https://api.telegram.org/bot${botToken}/${endpoint}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(jsonBody)
+            });
+            const tgJson = await tgRes.json();
+            if (!tgJson.ok) throw new Error(tgJson.description || 'Telegram send error');
+            return { cid, msgId: tgJson.result?.message_id };
+          })
+        );
+
+        for (const r of parallelResults) {
+          if (r.msgId) {
+            sentMessages.push({ chat_id: r.cid, message_id: r.msgId });
+            if (payload.pin) pinPromises.push(pinMessageAsync(botToken, r.cid, r.msgId));
+          }
         }
       }
     }
 
-    // Record metadata in MongoDB via lightweight API call
-    await apiCall('record_published', {
-      channel_ids: payload.channel_ids,
+    if (pinPromises.length > 0) await Promise.all(pinPromises);
+
+    // Save history record in background without blocking UI completion
+    apiCall('record_published', {
+      channel_ids: channelIds,
       sent_messages: sentMessages,
       text: payload.text,
-      has_media: true,
+      has_media: Boolean(attachedMediaBlob),
       buttons: payload.buttons,
       auto_delete_hours: payload.auto_delete_hours
-    });
+    }).then(() => loadState(true)).catch(() => {});
   }
 
   async function publishPost() {
@@ -1856,12 +1923,12 @@
     btn.textContent = 'Sending...';
 
     try {
-      // Use Direct Browser->Telegram upload for instant media posts
-      if (payload.publish_mode === 'now' && attachedMediaBlob) {
-        await publishMediaDirectToTelegram(payload);
+      if (payload.publish_mode === 'now') {
+        await publishDirectToTelegram(payload);
       } else {
         const res = await apiCall('publish_post', payload);
         if (!res.ok) throw new Error(res.error || 'Publish failed');
+        await loadState(true);
       }
 
       haptic('success');
@@ -1870,7 +1937,6 @@
       postButtons = [];
       clearMedia();
       renderLiveButtons();
-      await loadState(true);
     } catch (err) {
       haptic('error');
       showToast(err.message || 'Publish failed');
