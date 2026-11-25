@@ -152,6 +152,40 @@ module.exports = async (req, res) => {
       });
     }
 
+    if (action === 'send_picker') {
+      await bot.telegram.sendMessage(
+        ADMIN_ID,
+        '📢 Tap the button below to pick a channel:',
+        {
+          reply_markup: {
+            keyboard: [
+              [
+                {
+                  text: '➕ Pick Channel',
+                  request_chat: {
+                    request_id: 101,
+                    chat_is_channel: true,
+                    user_administrator_rights: {
+                      can_post_messages: true
+                    },
+                    bot_administrator_rights: {
+                      can_post_messages: true,
+                      can_edit_messages: true,
+                      can_delete_messages: true
+                    }
+                  }
+                }
+              ],
+              [{ text: '❌ Cancel Picker' }]
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true
+          }
+        }
+      );
+      return res.status(200).json({ ok: true });
+    }
+
     if (action === 'add_channel') {
       const ref = String(body.channel_ref || '').trim();
       const chat = await bot.telegram.getChat(ref);
@@ -228,6 +262,7 @@ module.exports = async (req, res) => {
           media: body.media || null,
           buttons: body.buttons || [],
           schedule_time: body.schedule_time,
+          repeat_mode: body.repeat_mode || 'none',
           auto_delete_hours: Number(body.auto_delete_hours || 0),
           silent: Boolean(body.silent),
           pin: Boolean(body.pin),
