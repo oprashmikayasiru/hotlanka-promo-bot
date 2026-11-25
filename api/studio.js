@@ -152,7 +152,6 @@ module.exports = async (req, res) => {
       const me = await bot.telegram.getMe().catch(() => ({ username: '' }));
       const rawChannels = await db.collection('studio_channels').find({}).sort({ added_at: -1 }).toArray();
 
-      // Auto-refresh live subscriber count & title for every connected channel
       const channels = await Promise.all(
         rawChannels.map(async (ch) => {
           try {
@@ -186,6 +185,38 @@ module.exports = async (req, res) => {
         posts,
         presets
       });
+    }
+
+    // Provides authorized admin session with Bot Token for Direct Browser->Telegram Media Upload
+    if (action === 'get_upload_token') {
+      return res.status(200).json({ ok: true, token: BOT_TOKEN });
+    }
+
+    // Records already-published Direct Media Post into MongoDB history
+    if (action === 'record_published') {
+      const channelIds = (body.channel_ids || []).map(String);
+      const channels = await db.collection('studio_channels').find({
+        chat_id: { $in: channelIds }
+      }).toArray();
+      const channelTitles = channels.map(c => c.title);
+
+      const deleteAt = Number(body.auto_delete_hours || 0) > 0
+        ? new Date(Date.now() + Number(body.auto_delete_hours) * 3600 * 1000)
+        : null;
+
+      await db.collection('studio_posts').insertOne({
+        status: 'published',
+        channel_ids: channelIds,
+        channel_titles: channelTitles,
+        sent_messages: body.sent_messages || [],
+        text: body.text || '',
+        has_media: Boolean(body.has_media),
+        buttons: body.buttons || [],
+        delete_at: deleteAt,
+        created_at: getSLNowString()
+      });
+
+      return res.status(200).json({ ok: true });
     }
 
     if (action === 'send_picker') {
