@@ -62,6 +62,18 @@ function getSLDateTime() {
   };
 }
 
+// Advance schedule_time ("YYYY-MM-DDTHH:MM") by 1 day or 7 days
+function computeNextScheduleTime(isoStr, repeatMode) {
+  const [datePart, timePart] = String(isoStr).split('T');
+  const [y, m, d] = datePart.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + (repeatMode === 'weekly' ? 7 : 1));
+  const ny = dt.getUTCFullYear();
+  const nm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const nd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${ny}-${nm}-${nd}T${timePart}`;
+}
+
 // --- Default Config Helper ---
 async function getConfig(db) {
   let cfg = await db.collection('settings').findOne({ _id: 'main_config' });
@@ -92,7 +104,7 @@ async function getConfig(db) {
   return cfg;
 }
 
-// --- Get Caption & Entities Based on Media Type (Photo vs Video/GIF) ---
+// --- Get Caption & Entities Based on Media Type ---
 function getCaptionPayload(cfg, itemType) {
   const isMotion = itemType === 'video' || itemType === 'animation';
   if (isMotion) {
@@ -206,7 +218,7 @@ async function publishNextQueueItem(db, cfg) {
   }
 }
 
-// --- Studio Mini App Cron Processor (Scheduled Posts + Auto-Delete) ---
+// --- Studio Mini App Cron Processor (Scheduled, Daily/Weekly Repeat & Auto-Delete) ---
 function buildStudioKeyboard(buttons) {
   if (!Array.isArray(buttons) || buttons.length === 0) return undefined;
   const rows = [];
@@ -292,18 +304,41 @@ async function processStudioCronTasks(db) {
       ? new Date(Date.now() + Number(post.auto_delete_hours) * 3600 * 1000)
       : null;
 
-    await db.collection('studio_posts').updateOne(
-      { _id: post._id },
-      {
-        $set: {
-          status: 'published',
-          sent_messages: sentMessages,
-          has_media: Boolean(post.media),
-          delete_at: deleteAt
-        },
-        $unset: { media: '' }
-      }
-    );
+    const repeatMode = post.repeat_mode || 'none';
+    if (repeatMode === 'daily' || repeatMode === 'weekly') {
+      // Save published record for history & auto-delete
+      await db.collection('studio_posts').insertOne({
+        status: 'published',
+        channel_ids: post.channel_ids || [],
+        channel_titles: post.channel_titles || [],
+        sent_messages: sentMessages,
+        text: post.text || '',
+        has_media: Boolean(post.media),
+        buttons: post.buttons || [],
+        delete_at: deleteAt,
+        created_at: slIsoMinute.replace('T', ' ')
+      });
+
+      // Advance schedule to next day/week
+      const nextTime = computeNextScheduleTime(post.schedule_time, repeatMode);
+      await db.collection('studio_posts').updateOne(
+        { _id: post._id },
+        { $set: { schedule_time: nextTime } }
+      );
+    } else {
+      await db.collection('studio_posts').updateOne(
+        { _id: post._id },
+        {
+          $set: {
+            status: 'published',
+            sent_messages: sentMessages,
+            has_media: Boolean(post.media),
+            delete_at: deleteAt
+          },
+          $unset: { media: '' }
+        }
+      );
+    }
   }
 
   // 2. Auto-Delete Expired Published Studio Posts
@@ -461,32 +496,6 @@ function getTimesKeyboard(times) {
 // --- Commands ---
 bot.command('start', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
-  const payload = ctx.startPayload || '';
-
-  // Native Channel Picker triggered from Post Studio Mini App
-  if (payload === 'pickchannel') {
-    await ctx.deleteMessage().catch(() => {});
-    return ctx.reply('📢 Select a channel to connect to Post Studio:', {
-      reply_markup: {
-        keyboard: [
-          [
-            {
-              text: '➕ Pick Channel',
-              request_chat: {
-                request_id: 101,
-                chat_is_channel: true,
-                bot_is_member: true
-              }
-            }
-          ],
-          [{ text: '❌ Cancel Picker' }]
-        ],
-        resize_keyboard: true,
-        one_time_keyboard: true
-      }
-    });
-  }
-
   await setupAdminCommands();
   await ctx.deleteMessage().catch(() => {});
   const db = await getDb();
@@ -1356,7 +1365,6 @@ module.exports = async (req, res) => {
     const db = await getDb();
 
     if (req.method === 'GET') {
-      // Process Studio Scheduled & Auto-Delete Posts
       await processStudioCronTasks(db);
 
       const cfg = await getConfig(db);
