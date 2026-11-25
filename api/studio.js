@@ -23,6 +23,17 @@ async function getDb() {
   return cachedDb;
 }
 
+// Sri Lanka Time Formatter (UTC +5:30) -> "YYYY-MM-DD HH:MM"
+function getSLNowString() {
+  const slDate = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  const yyyy = slDate.getUTCFullYear();
+  const mm = String(slDate.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(slDate.getUTCDate()).padStart(2, '0');
+  const hh = String(slDate.getUTCHours()).padStart(2, '0');
+  const min = String(slDate.getUTCMinutes()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+}
+
 function verifyTelegramInitData(initData) {
   if (!initData || !BOT_TOKEN) return null;
   try {
@@ -139,7 +150,32 @@ module.exports = async (req, res) => {
   try {
     if (action === 'get_state') {
       const me = await bot.telegram.getMe().catch(() => ({ username: '' }));
-      const channels = await db.collection('studio_channels').find({}).sort({ added_at: -1 }).toArray();
+      const rawChannels = await db.collection('studio_channels').find({}).sort({ added_at: -1 }).toArray();
+
+      // Auto-refresh live subscriber count & title for every connected channel
+      const channels = await Promise.all(
+        rawChannels.map(async (ch) => {
+          try {
+            const [chatInfo, freshCount] = await Promise.all([
+              bot.telegram.getChat(ch.chat_id),
+              bot.telegram.getChatMembersCount(ch.chat_id)
+            ]);
+            const updatedTitle = chatInfo.title || ch.title;
+            const updatedUsername = chatInfo.username || ch.username || '';
+
+            if (freshCount !== ch.members_count || updatedTitle !== ch.title) {
+              await db.collection('studio_channels').updateOne(
+                { _id: ch._id },
+                { $set: { title: updatedTitle, username: updatedUsername, members_count: freshCount } }
+              );
+            }
+            return { ...ch, title: updatedTitle, username: updatedUsername, members_count: freshCount };
+          } catch (e) {
+            return ch;
+          }
+        })
+      );
+
       const posts = await db.collection('studio_posts').find({}).sort({ _id: -1 }).limit(50).toArray();
       const presets = await db.collection('studio_presets').find({}).sort({ _id: -1 }).toArray();
 
@@ -248,7 +284,7 @@ module.exports = async (req, res) => {
         silent: Boolean(body.silent),
         pin: Boolean(body.pin),
         protect: Boolean(body.protect),
-        created_at: new Date().toISOString().slice(0, 16).replace('T', ' ')
+        created_at: getSLNowString()
       });
       return res.status(200).json({ ok: true });
     }
@@ -274,7 +310,7 @@ module.exports = async (req, res) => {
           silent: Boolean(body.silent),
           pin: Boolean(body.pin),
           protect: Boolean(body.protect),
-          created_at: new Date().toISOString().slice(0, 16).replace('T', ' ')
+          created_at: getSLNowString()
         });
         return res.status(200).json({ ok: true });
       }
@@ -298,7 +334,7 @@ module.exports = async (req, res) => {
         has_media: Boolean(body.media),
         buttons: body.buttons || [],
         delete_at: deleteAt,
-        created_at: new Date().toISOString().slice(0, 16).replace('T', ' ')
+        created_at: getSLNowString()
       });
 
       return res.status(200).json({ ok: true });
