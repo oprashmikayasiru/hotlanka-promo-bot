@@ -1,8 +1,8 @@
 const { Telegraf, Markup } = require('telegraf');
 const { MongoClient, ObjectId } = require('mongodb');
- 
+
 // --- Environment Variables ---
-const BOT_TOKEN = process.env.BOT_TOKEN; 
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const MONGODB_URI = process.env.MONGODB_URI;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const TARGET_CHANNEL_ID = process.env.TARGET_CHANNEL_ID;
@@ -53,8 +53,11 @@ function getSLDateTime() {
   const yyyy = slDate.getUTCFullYear();
   const mm = String(slDate.getUTCMonth() + 1).padStart(2, '0');
   const dd = String(slDate.getUTCDate()).padStart(2, '0');
+  const hh = String(slDate.getUTCHours()).padStart(2, '0');
+  const min = String(slDate.getUTCMinutes()).padStart(2, '0');
   return {
     dateStr: `${yyyy}-${mm}-${dd}`,
+    slIsoMinute: `${yyyy}-${mm}-${dd}T${hh}:${min}`,
     curTotalMins: slDate.getUTCHours() * 60 + slDate.getUTCMinutes()
   };
 }
@@ -138,7 +141,7 @@ async function pickNextAlternatingItem(db, cfg) {
   return item;
 }
 
-// --- Publish Single Next Valid Item from Queue (Direct file_id — Zero External Processing) ---
+// --- Publish Single Next Valid Item from Queue ---
 async function publishNextQueueItem(db, cfg) {
   if (!TARGET_CHANNEL_ID) {
     return { status: 'error', reason: 'Missing TARGET_CHANNEL_ID' };
@@ -203,7 +206,121 @@ async function publishNextQueueItem(db, cfg) {
   }
 }
 
-// --- Time-Budgeted Batch Execution (Auto-Unlock + 5s Safe Cutoff + Exact Daily Cap) ---
+// --- Studio Mini App Cron Processor (Scheduled Posts + Auto-Delete) ---
+function buildStudioKeyboard(buttons) {
+  if (!Array.isArray(buttons) || buttons.length === 0) return undefined;
+  const rows = [];
+  let halfBuffer = [];
+
+  for (const b of buttons) {
+    if (!b.text || !b.url) continue;
+    const btnObj = Markup.button.url(b.text, b.url);
+    if (b.layout === 'half') {
+      halfBuffer.push(btnObj);
+      if (halfBuffer.length === 2) {
+        rows.push(halfBuffer);
+        halfBuffer = [];
+      }
+    } else {
+      if (halfBuffer.length > 0) {
+        rows.push(halfBuffer);
+        halfBuffer = [];
+      }
+      rows.push([btnObj]);
+    }
+  }
+  if (halfBuffer.length > 0) rows.push(halfBuffer);
+  return rows.length > 0 ? Markup.inlineKeyboard(rows) : undefined;
+}
+
+async function processStudioCronTasks(db) {
+  const { slIsoMinute } = getSLDateTime();
+
+  // 1. Publish Due Scheduled Studio Posts
+  const duePosts = await db.collection('studio_posts').find({
+    status: 'scheduled',
+    schedule_time: { $lte: slIsoMinute }
+  }).toArray();
+
+  for (const post of duePosts) {
+    const kb = buildStudioKeyboard(post.buttons);
+    const extra = {
+      parse_mode: 'HTML',
+      disable_notification: Boolean(post.silent),
+      protect_content: Boolean(post.protect),
+      ...(kb || {})
+    };
+
+    const sentMessages = [];
+    for (const cid of post.channel_ids || []) {
+      try {
+        let sentMsg;
+        if (post.media && post.media.dataUrl) {
+          const base64Data = post.media.dataUrl.split(',')[1];
+          const buffer = Buffer.from(base64Data, 'base64');
+          const source = { source: buffer, filename: post.media.name || 'media' };
+
+          if (post.media.type === 'video') {
+            sentMsg = await bot.telegram.sendVideo(cid, source, {
+              caption: post.text || '',
+              supports_streaming: true,
+              ...extra
+            });
+          } else {
+            sentMsg = await bot.telegram.sendPhoto(cid, source, {
+              caption: post.text || '',
+              ...extra
+            });
+          }
+        } else {
+          sentMsg = await bot.telegram.sendMessage(cid, post.text, {
+            disable_web_page_preview: false,
+            ...extra
+          });
+        }
+
+        if (sentMsg?.message_id) {
+          sentMessages.push({ chat_id: cid, message_id: sentMsg.message_id });
+          if (post.pin) {
+            await bot.telegram.pinChatMessage(cid, sentMsg.message_id, { disable_notification: true }).catch(() => {});
+          }
+        }
+      } catch (e) {}
+    }
+
+    const deleteAt = Number(post.auto_delete_hours || 0) > 0
+      ? new Date(Date.now() + Number(post.auto_delete_hours) * 3600 * 1000)
+      : null;
+
+    await db.collection('studio_posts').updateOne(
+      { _id: post._id },
+      {
+        $set: {
+          status: 'published',
+          sent_messages: sentMessages,
+          has_media: Boolean(post.media),
+          delete_at: deleteAt
+        },
+        $unset: { media: '' }
+      }
+    );
+  }
+
+  // 2. Auto-Delete Expired Published Studio Posts
+  const expiredPosts = await db.collection('studio_posts').find({
+    status: 'published',
+    delete_at: { $ne: null, $lte: new Date() }
+  }).toArray();
+
+  for (const exp of expiredPosts) {
+    for (const m of exp.sent_messages || []) {
+      await bot.telegram.deleteMessage(m.chat_id, m.message_id).catch(() => {});
+    }
+    await db.collection('studio_posts').deleteOne({ _id: exp._id });
+  }
+}
+
+// --- Time-Budgeted Batch Execution ---
 async function runScheduledBatch(db, startTime) {
   const cfg = await getConfig(db);
   if (!cfg.is_active) return;
@@ -344,6 +461,32 @@ function getTimesKeyboard(times) {
 // --- Commands ---
 bot.command('start', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
+  const payload = ctx.startPayload || '';
+
+  // Native Channel Picker triggered from Post Studio Mini App
+  if (payload === 'pickchannel') {
+    await ctx.deleteMessage().catch(() => {});
+    return ctx.reply('📢 Select a channel to connect to Post Studio:', {
+      reply_markup: {
+        keyboard: [
+          [
+            {
+              text: '➕ Pick Channel',
+              request_chat: {
+                request_id: 101,
+                chat_is_channel: true,
+                bot_is_member: true
+              }
+            }
+          ],
+          [{ text: '❌ Cancel Picker' }]
+        ],
+        resize_keyboard: true,
+        one_time_keyboard: true
+      }
+    });
+  }
+
   await setupAdminCommands();
   await ctx.deleteMessage().catch(() => {});
   const db = await getDb();
@@ -373,52 +516,6 @@ bot.command('admin', async (ctx) => {
   );
 });
 
-bot.command('clearphotos', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return;
-  await ctx.deleteMessage().catch(() => {});
-  const db = await getDb();
-  const res = await db.collection('queue').deleteMany({
-    $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }]
-  });
-  const cfg = await getConfig(db);
-  if (cfg.panel_msg_id) {
-    await bot.telegram.editMessageText(
-      ADMIN_ID,
-      cfg.panel_msg_id,
-      undefined,
-      await renderAdminText(db, cfg),
-      { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
-    ).catch(() => {});
-  }
-  const notice = await ctx.reply(`🗑 Cleared ${res.deletedCount} photo(s) from queue.`);
-  setTimeout(() => {
-    bot.telegram.deleteMessage(ADMIN_ID, notice.message_id).catch(() => {});
-  }, 3500);
-});
-
-bot.command('clearvideos', async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return;
-  await ctx.deleteMessage().catch(() => {});
-  const db = await getDb();
-  const res = await db.collection('queue').deleteMany({
-    media_type: { $in: ['video', 'animation'] }
-  });
-  const cfg = await getConfig(db);
-  if (cfg.panel_msg_id) {
-    await bot.telegram.editMessageText(
-      ADMIN_ID,
-      cfg.panel_msg_id,
-      undefined,
-      await renderAdminText(db, cfg),
-      { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
-    ).catch(() => {});
-  }
-  const notice = await ctx.reply(`🗑 Cleared ${res.deletedCount} video(s) from queue.`);
-  setTimeout(() => {
-    bot.telegram.deleteMessage(ADMIN_ID, notice.message_id).catch(() => {});
-  }, 3500);
-});
-
 bot.command('cancel', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return;
   await ctx.deleteMessage().catch(() => {});
@@ -437,6 +534,37 @@ bot.command('cancel', async (ctx) => {
       await renderAdminText(db, cfg),
       { parse_mode: 'HTML', ...getAdminKeyboard(cfg) }
     ).catch(() => {});
+  }
+});
+
+// --- Native Channel Picker Response Handler ---
+bot.on('chat_shared', async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return;
+  const sharedChatId = String(ctx.message.chat_shared.chat_id);
+  const db = await getDb();
+
+  try {
+    const chat = await bot.telegram.getChat(sharedChatId);
+    const members = await bot.telegram.getChatMembersCount(sharedChatId).catch(() => 0);
+    await db.collection('studio_channels').updateOne(
+      { chat_id: sharedChatId },
+      {
+        $set: {
+          chat_id: sharedChatId,
+          title: chat.title || sharedChatId,
+          username: chat.username || '',
+          members_count: members,
+          added_at: new Date()
+        }
+      },
+      { upsert: true }
+    );
+    const okMsg = await ctx.reply(`✅ Connected "${chat.title}" to Post Studio!`, Markup.removeKeyboard());
+    setTimeout(() => {
+      bot.telegram.deleteMessage(ADMIN_ID, okMsg.message_id).catch(() => {});
+    }, 3500);
+  } catch (err) {
+    await ctx.reply('❌ Make sure the bot is an Admin in that channel first.', Markup.removeKeyboard());
   }
 });
 
@@ -554,7 +682,6 @@ bot.action('admin_toggle_status', async (ctx) => {
   await ctx.answerCbQuery(cfg.is_active ? '🟢 Bot Activated' : '🔴 Bot Paused').catch(() => {});
 });
 
-// --- Instant Post Now (Popup Alert Only + Auto-Update Panel) ---
 bot.action('admin_post_now', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
 
@@ -577,7 +704,6 @@ bot.action('admin_post_now', async (ctx) => {
   }).catch(() => {});
 });
 
-// Daily Limit Menu
 bot.action('admin_ui_limit', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const kb = Markup.inlineKeyboard([
@@ -621,7 +747,6 @@ bot.action(/set_limit_(\d+)/, async (ctx) => {
   }).catch(() => {});
 });
 
-// Schedule Times Menu
 bot.action('admin_ui_times', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
@@ -673,7 +798,7 @@ bot.action(/del_time_(.+)/, async (ctx) => {
   await ctx.answerCbQuery(`🗑 Removed ${timeToRemove}`).catch(() => {});
 });
 
-// --- Set Caption Menu (Photo Caption & Video Caption + Post Preview) ---
+// --- Set Caption Menu ---
 bot.action('admin_ui_caption', async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const db = await getDb();
@@ -747,7 +872,6 @@ bot.action('cap_menu_video', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
 });
 
-// Non-Destructive Post Preview with Reply Keyboard "🗑 Close Preview"
 bot.action(/preview_post_(photo|video)/, async (ctx) => {
   if (ctx.from.id !== ADMIN_ID) return ctx.answerCbQuery().catch(() => {});
   const targetType = ctx.match[1];
@@ -843,7 +967,7 @@ bot.action(/preview_post_(photo|video)/, async (ctx) => {
   }
 });
 
-// --- Queue Management Hub (Browse Queue + Clear Photos / Clear Videos Buttons) ---
+// --- Queue Management Hub ---
 async function renderQueueMenuText(db) {
   const photoCount = await db.collection('queue').countDocuments({
     $or: [{ media_type: 'photo' }, { media_type: { $exists: false } }]
@@ -1086,6 +1210,13 @@ bot.on('text', async (ctx) => {
   const cfg = await getConfig(db);
   const rawText = ctx.message.text;
 
+  if (rawText.trim() === '❌ Cancel Picker') {
+    await ctx.deleteMessage().catch(() => {});
+    const closedMsg = await ctx.reply('Cancelled.', Markup.removeKeyboard());
+    await bot.telegram.deleteMessage(ADMIN_ID, closedMsg.message_id).catch(() => {});
+    return;
+  }
+
   if (rawText.trim() === '🗑 Close Preview') {
     await ctx.deleteMessage().catch(() => {});
     if (cfg.preview_msg_id) {
@@ -1225,6 +1356,9 @@ module.exports = async (req, res) => {
     const db = await getDb();
 
     if (req.method === 'GET') {
+      // Process Studio Scheduled & Auto-Delete Posts
+      await processStudioCronTasks(db);
+
       const cfg = await getConfig(db);
 
       if (cfg.is_active) {
